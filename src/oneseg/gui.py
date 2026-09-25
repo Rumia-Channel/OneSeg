@@ -119,11 +119,14 @@ class MainWindow(QMainWindow):
         self.stop_btn = QPushButton("Stop")
         self.record_btn = QPushButton("Record I/Q…")
         self.play_ts_btn = QPushButton("Play decoded TS…")
+        self.short_capture_btn = QPushButton("Capture 3s for decoder…")
+        self.short_capture_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
         self.record_btn.setEnabled(False)
         actions.addWidget(self.start_btn)
         actions.addWidget(self.stop_btn)
         actions.addWidget(self.record_btn)
+        actions.addWidget(self.short_capture_btn)
         actions.addWidget(self.play_ts_btn)
         layout.addLayout(actions)
 
@@ -140,6 +143,7 @@ class MainWindow(QMainWindow):
         self.start_btn.clicked.connect(self._start)
         self.stop_btn.clicked.connect(self._stop)
         self.record_btn.clicked.connect(self._record)
+        self.short_capture_btn.clicked.connect(self._capture_short)
         self.play_ts_btn.clicked.connect(self._play_ts)
         self._mode_changed()
 
@@ -198,6 +202,7 @@ class MainWindow(QMainWindow):
 
     def _ready(self):
         self.record_btn.setEnabled(True)
+        self.short_capture_btn.setEnabled(True)
         if self.wfm.isChecked() and self.worker:
             self.worker.request("audio", True)
 
@@ -238,6 +243,26 @@ class MainWindow(QMainWindow):
         self.play_ts_btn.setEnabled(True)
         self.play_ts_btn.setText("Play decoded TS…")
 
+    def _capture_short(self):
+        if self.worker is None:
+            return
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        name = f"ch{self.channel.value()}" if self.mode.currentData() == "oneseg" else "sdr"
+        suggested = str(Path.home() / f"oneseg_{name}_{stamp}.c64")
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save 3 seconds of raw I/Q (not video)",
+            suggested, "Complex64 I/Q (*.c64)"
+        )
+        if not filename:
+            return
+        path = Path(filename)
+        if path.suffix.lower() != ".c64":
+            path = path.with_suffix(".c64")
+        if path.exists():
+            QMessageBox.warning(self, "Already exists", "Choose a new capture filename.")
+            return
+        self.worker.request("capture_short", str(path), 3.0)
+
     def _record(self):
         if self.worker is None:
             return
@@ -264,6 +289,7 @@ class MainWindow(QMainWindow):
     def _recording(self, recording: bool):
         self.record_btn.setProperty("active", recording)
         self.record_btn.setText("Stop recording" if recording else "Record I/Q…")
+        self.short_capture_btn.setEnabled(not recording and self.worker is not None)
 
     def _stop(self):
         if self.worker:
@@ -276,6 +302,7 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.record_btn.setEnabled(False)
+        self.short_capture_btn.setEnabled(False)
         self._recording(False)
         self.status.setText("Stopped")
 
