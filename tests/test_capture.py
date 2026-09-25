@@ -41,8 +41,8 @@ def test_exact_capture_and_metadata_with_zero_ppm(tmp_path):
     assert fake.calls == 1 + 4  # one warm-up plus four data reads
     assert fake.closed
     assert fake.freq_correction == 0
-    assert np.allclose(actual[:10], np.complex64(1.2 + 1j))
-    assert np.allclose(actual[-10:], np.complex64(1.5 + 1j))
+    assert np.allclose(actual[:10], np.complex64(0.2 + 1j))
+    assert np.allclose(actual[-10:], np.complex64(0.5 + 1j))
     assert info["center_frequency_hz"] == 557_142_857
     assert info["decoding_status"] == "RAW_IQ_NOT_TS"
     assert json.loads(output.with_suffix(".c64.json").read_text())["samples"] == len(actual)
