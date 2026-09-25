@@ -282,3 +282,63 @@ also try \`--seconds 3.0\` to search more symbols. In that case the
 next step is detailed per-carrier differential-phase and frame timing
 analysis using the *same* uploaded .c64/.json, not declaring a station
 from sync candidates alone.
+
+
+## ch20_safe recording: six consecutive TMCC parity-verified frames
+
+The uploaded I/Q recordings with similar names are **different acquisitions**:
+
+- First capture, UTC 2026-09-25 12:16:14, \`ch20_safe.c64\`:
+  3,000,000-ish? No: exactly **6,144,000** complex samples,
+  3 full-scale component hits, approximate complex RMS 0.263,
+  pilot offset +12 bins and fractional CFO around +113 Hz.
+- Second capture, UTC 2026-09-25 12:35:07, uploaded as
+  \`ch20_safe(1).c64\` with metadata filename
+  \`ch20_safe.c64(1).json\`: also 6,144,000 samples but **695,587**
+  full-scale I/Q hits (**11.32%**), RMS approximately 0.711,
+  pilot offset +11 bins and fractional CFO around +428 Hz.
+
+The supplied \`ch20_tmcc.json\` (capture field originally
+\`ch20_safe.c64\`) matches the **second capture's RF offsets and CP
+correlation**, not the first capture's. Independently running
+the same processing stages on the second uploaded .c64 reproduced
+2644 FFT symbols, 13 sync-word candidates and **six consecutively
+parity-verified TMCC frames**, starting at differential-bit
+positions 67, 271, 475, 679, 883 and 1087. All six frames share
+the same protected information and parity; the alternating sync words
+have zero errors. This confirms one central ISDB-T 1seg segment's
+transmission metadata, **not** successful QPSK payload/FEC/TS decoding.
+
+Reported TMCC: \`partial_reception_flag=true\`;
+layer A: **QPSK 2/3**, Mode-3 time-interleave parameter **4**,
+**1 segment**. Layer B: 64QAM 3/4, Mode-3 time interleaving
+parameter 2, 12 segments; layer C unused. These parameters
+are specific to the **recorded broadcast at that time**, not
+universal settings. Because second recording clips 11.32% of
+I/Q components, use the first 0-dB recording or reduce front-end
+gain/antenna input if subsequent payload FEC fails. Fixed manual
+gain 0 dB does not guarantee an unclipped ADC.
+
+### Unmapped central Layer-A payload carriers
+
+\`oneseg-pilots\` now excludes all 36 scattered pilots (symbol
+dependent), four TMCC carriers and eight AC1 carriers per Mode-3
+central segment. The first **432** carriers thus contain **384
+complex-valued payload carriers** for each synchronized OFDM symbol;
+the 433rd segment-edge carrier is excluded. See ARIB STD-B31
+mode-3 center segment carrier layout and AC1/TMCC locations. No
+frequency/time/bit deinterleaving or inner Viterbi is applied yet.
+
+\`\`\`powershell
+git pull
+uv sync
+uv run oneseg-pilots ch20_safe.c64 --seconds 3.0 --json ch20_layer_a.json --layer-a-output ch20_layer_a.npz
+\`\`\`
+
+The NPZ file includes \`equalized_payload_carriers\` of shape
+\`(number_of_symbols, 384)\`, and
+\`verified_tmcc_frame_start_fft_rows\`, which reference
+only complete frames with passing TMCC cyclic parity.
+The CLI also reports I/Q full-scale fraction and warns above
+5%. This NPZ is **not a television/video file or a valid .ts**
+and does not yet support live video.
