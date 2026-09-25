@@ -103,3 +103,35 @@ Reference for reported I/Q full-scale occupancy on the 2026-09-25 ch27
 user-supplied 3-second capture: ~49% of samples had at least one full-scale
 I/Q component. That recording is not adequate to declare video decoding
 functional, and the receiver must not invent MPEG-TS from it.
+
+## UHF physical-channel RF scan (Windows GUI)
+
+Rather than assuming that **27ch** is in use locally, start the RTL-SDR,
+switch **Mode** to `1seg RF research`, uncheck **Automatic** RF gain,
+and use one fixed manual gain across all channels (e.g. -9.9 dB if the
+previous signal overloaded). Click `Scan UHF 13–52 (RF)`.
+
+The receiver tunes the *center* of each 6 MHz UHF physical channel 13–52
+using the existing 2.048 MS/s hardware and measures three post-settle
+blocks. The GUI reports channel/frequency, DC-corrected complex I/Q power
+(dB relative to complex full-scale), power above the **median of all scanned
+channels**, and the percent of samples at I or Q full-scale.
+
+- `RF CANDIDATE (NOT TV LOCK)`: at least 6 dB above the **scan-wide**
+  median and no >5% clipping. Could be other RF interference; weaker
+  valid stations can be missed.
+- `OVERLOAD / RETEST`: >5% full-scale I/Q; reduce manual gain and rerun.
+- `NO STRONG RF CONTRAST`: no strong difference from other scanned
+  centers; does **not** prove there is no broadcast in that channel.
+
+The scan keeps one fixed manual gain, holds the same opened USB device,
+shows progress, allows cancellation, and restores the previous tune.
+Use `Tune selected` to set the physical channel without retyping it;
+then `Capture 3s for decoder…` to save a usable fixture. Export the
+measurements using `Export scan CSV…` and share the CSV if useful.
+
+**This is not a decoded station scan**: no TMCC verification, transport
+stream, program list or audio/video is produced. At 2.048 MS/s it can
+measure the middle part of each 6 MHz channel, not the entire 13-seg signal
+at once. The threshold is relative and can fail if the median is
+contaminated, all channels have similar energy, or local signals are weak.
