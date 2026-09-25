@@ -25,7 +25,7 @@ MODE = 3
 ACTIVE = 433
 BASE = 512 - 216
 TMCC_CARRIERS = np.array([101, 131, 286, 349], dtype=np.intp)
-TMCC_SYNC_EVEN = np.array([0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 0], dtype=np.uint8)
+TMCC_SYNC_EVEN = np.array([0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0], dtype=np.uint8)
 TMCC_SYNC_ODD = 1 - TMCC_SYNC_EVEN
 
 
