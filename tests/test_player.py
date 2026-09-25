@@ -1,4 +1,9 @@
 from pathlib import Path
+import sys
+import pytest
+
+if sys.platform != "win32":
+    pytest.skip("The target PySide6 QtGui runtime needs libEGL on headless Linux CI", allow_module_level=True)
 
 from oneseg.player import TransportPlayer
 

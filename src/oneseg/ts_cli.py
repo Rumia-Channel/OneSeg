@@ -11,6 +11,7 @@ import argparse
 from pathlib import Path
 
 from .fec import OuterReedSolomon
+from .post_fec import PostViterbiTransport
 from .ts import TransportFramer, TransportStats, TransportWriter, parse_packet
 
 
@@ -37,6 +38,23 @@ def decode_outer_file(source: Path, target: Path, *, strict: bool = True) -> tup
     return accepted, rejected
 
 
+def decode_post_fec_file(
+    source: Path, target: Path, *, byte_deinterleaving: bool = True
+) -> tuple[int, int]:
+    """Consume externally recovered, aligned Viterbi bytes (NOT RTL-SDR I/Q)."""
+    decoder = PostViterbiTransport(byte_deinterleaving=byte_deinterleaving)
+    with source.open("rb") as inp, TransportWriter(target) as out:
+        first = True
+        while chunk := inp.read(204 * 64):
+            for packet in decoder.feed(chunk, frame_begin=first):
+                out.write(packet)
+            first = False
+    if decoder.pending:
+        raise ValueError("trailing partial 204-byte block")
+    rejected = decoder.stats.rejected_rs_words + decoder.stats.rejected_ts_packets
+    return decoder.stats.good_ts_packets, rejected
+
+
 def inspect_ts(source: Path) -> tuple[TransportStats, TransportFramer]:
     stats = TransportStats()
     framer = TransportFramer()
@@ -56,6 +74,17 @@ def main() -> int:
     convert.add_argument("input", type=Path)
     convert.add_argument("output", type=Path)
     convert.add_argument("--skip-bad", action="store_true", help="skip uncorrectable codewords")
+    postfec = subparsers.add_parser(
+        "postfec",
+        help="aligned Viterbi-output bytes -> byte/energy deinterleave, RS, TS",
+    )
+    postfec.add_argument("input", type=Path)
+    postfec.add_argument("output", type=Path)
+    postfec.add_argument(
+        "--no-byte-deinterleave",
+        action="store_true",
+        help="input is already deinterleaved; still needs descrambling/RS",
+    )
     inspect = subparsers.add_parser("inspect", help="inspect an already-demodulated .ts")
     inspect.add_argument("input", type=Path)
     args = parser.parse_args()
@@ -66,6 +95,14 @@ def main() -> int:
             )
             print(f"TS packets: {accepted}; rejected RS words: {dropped}; output: {args.output}")
             if not accepted:
+                return 2
+        elif args.task == "postfec":
+            count, rejected = decode_post_fec_file(
+                args.input, args.output,
+                byte_deinterleaving=not args.no_byte_deinterleave,
+            )
+            print(f"TS packets: {count}; rejected blocks: {rejected}; output: {args.output}")
+            if not count:
                 return 2
         else:
             stats, framer = inspect_ts(args.input)
