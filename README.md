@@ -145,3 +145,54 @@ To independently reproduce these intermediate measurements (the tuner does not n
     uv run oneseg-lock oneseg_ch20_20260925_161517.c64 --json ch20_lock.json
 
 Keep the matching .c64.json alongside the recording. The next unverified step is **pilot-aided equalization and TMCC/frame synchronization** of the central one-segment carriers, followed by byte/bit deinterleaving, FEC and a real MPEG-TS output. Do not claim real television playback from this CP result.
+
+
+## Pilot alignment, experimental TMCC and capture continuity (2026-09-25)
+
+The 20ch / 0 dB / 0 ppm real recording allowed identifying an additional
+uncompensated **integer carrier shift of +12 FFT bins** (approximately
++11.9 kHz at the one-segment processing sample rate). In 30 early
+symbols the expected pilot PRBS pattern has ~0.946 adjacent-pilot
+channel coherence at this shift; no other tested shift in ±30 came
+close. The fractional cyclic-prefix CFO estimate was approximately
+-305 Hz. Both must be corrected before attempting to read TMCC
+carriers at their nominal positions. This is **not** the same as a
+verified tuner PPM calibration; RF center error and oscillator error
+cannot yet be separated.
+
+The uploaded recording also shows substantial changes in recovered
+OFDM timing and scattered-pilot phase across its ~131072-sample
+synchronous read boundaries. This is **consistent with missing samples**
+between separate synchronous USB reads, but cannot conclusively
+distinguish USB buffering, receiver processing, and other capture
+discontinuities without hardware timestamps. An earlier statement that
+the original 3-second capture was sufficient for full TMCC decoding
+was overconfident: contiguous samples must be confirmed across the
+whole 204-symbol ISDB-T frame. Do not concatenate out-of-sync
+partial captures and claim live decoding.
+
+The **3-second GUI decoder capture button** and \`oneseg-capture\` CLI
+now use the same continuous \`read_samples_async()\` callback stream,
+write exact complex64 sample counts, and atomically publish the
+recording and metadata with \`"acquisition": "continuous_async"\`.
+While the GUI captures, spectrum updates are paused to reduce CPU
+and USB-buffer latency. The manual \`Record I/Q…\` still uses
+synchronous reads and is **not** recommended for decoder fixtures.
+
+After \`git pull\` and \`uv sync\`, with the GUI/SDR++ closed, capture a
+new 20ch test vector with 0 dB manual gain:
+
+\`\`\`powershell
+uv run oneseg-capture --channel 20 --seconds 3 --gain 0 --ppm 0 --output ch20_async.c64
+uv run oneseg-quality ch20_async.c64
+uv run oneseg-lock ch20_async.c64
+uv run oneseg-pilots ch20_async.c64 --seconds 1.2 --json ch20_pilots.json
+\`\`\`
+
+The new pilot diagnostic searches integer FFT offsets ±32 and the four
+scattered-pilot phases, interpolates the pilot channel estimate, and
+extracts tentative differential TMCC soft bits / repeated 16-bit sync
+candidates. It is deliberately **not** a BCH-verified TMCC decoder and
+cannot currently output a playable TS from raw I/Q. A new uninterrupted
+20ch recording is needed before implementing reliable frame continuity,
+BCH validation and data FEC.
