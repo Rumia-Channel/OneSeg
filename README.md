@@ -342,3 +342,53 @@ only complete frames with passing TMCC cyclic parity.
 The CLI also reports I/Q full-scale fraction and warns above
 5%. This NPZ is **not a television/video file or a valid .ts**
 and does not yet support live video.
+
+
+## Offline Layer-A frequency/time/bit deinterleaver (ch20 fixture)
+
+The uploaded \`ch20_layer_a.npz\` contains the standard one-seg
+\`(2644, 384)\` array and FFT frame starts
+\`[68, 272, 476, 680, 884, 1088]\`.
+Its companion \`ch20_layer_a.json\` confirms six zero-syndrome
+TMCC frames, Mode-3, partial reception, Layer A QPSK / code rate 2/3,
+and **time interleaving I=4**; \`iq_fullscale_percent\` is
+**11.3214%**, so payload FEC may be challenged by ADC clipping.
+Across the verified frames, the constellation points become
+increasingly dispersed: QPSK decision-directed RMS EVM with
+fixed ideal (+/-1,+/-j) grows from about 0.33 (frame starting
+row 68) to about 1.15 (row 1088). These are exploratory
+decision-directed error proxies, **not measured BER**.
+
+The standard ([ARIB STD-B31](https://paperzz.com/doc/8177651/arib-std-%E2%80%93-b31),
+sections 3.9.3.2 and 3.11) defines the Mode-3 384-carrier
+frequency permutation, transmitter time delays
+\`I*((5*i)%96)\`, and QPSK b1 120-carrier delay.
+The standalone \`oneseg-deinterleave\` tool implements the
+*receiver inverse* in this order:
+
+1. Frequency de-randomizing within segment 0; no inter-segment
+   mixing or carrier rotation (partial reception).
+2. Complementary time deinterleaver delay
+   \`I*(95-((5*i)%96))\`; discard \`95*I=380\` warmup
+   OFDM symbols, retaining \`2644-380=2264\` data rows.
+3. Invert QPSK b1 120-carrier delay and serialize b0/b1
+   (I and Q axes). The signed outputs are **uncalibrated
+   soft metrics**, not rigorously estimated log-likelihood ratios.
+
+\`\`\`powershell
+git pull
+uv sync
+uv run oneseg-deinterleave ch20_layer_a.npz --tmcc-report ch20_layer_a.json --output ch20_deinterleaved.npz
+\`\`\`
+
+Result: \`ch20_deinterleaved.npz\` and
+\`ch20_deinterleaved.npz.json\`. The archive contains
+\`deinterleaved_qpsk_carriers\`,
+\`qpsk_hard_bits\`, and \`qpsk_soft_metric_proxy\`.
+The output is a **coded bitstream fixture**, NOT a TS file,
+not a claim that the original captured samples are
+fully continuous, and not evidence of successful Viterbi FEC.
+The next validation is correctly aligned rate-2/3
+depuncturing/Viterbi decoding, byte deinterleaving, energy
+descrambling and RS/TS packet tests. Do not label a failed
+candidate or a random byte stream as television.
