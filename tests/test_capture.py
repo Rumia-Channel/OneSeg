@@ -62,7 +62,9 @@ def test_device_closed_and_no_partial_output_after_failed_read(tmp_path):
     class BrokenSdr(FakeSdr):
         def read_samples(self, count):
             self.calls += 1
-            return np.empty(0, dtype=np.complex64) if self.calls == 2 else super().read_samples(count)
+            if self.calls == 2:
+                return np.empty(0, dtype=np.complex64)
+            return np.full(count, self.calls / 10 + 1j, dtype=np.complex64)
 
     fake = BrokenSdr()
     target = tmp_path / "incomplete.c64"
