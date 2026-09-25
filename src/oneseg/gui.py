@@ -269,6 +269,170 @@ class MainWindow(QMainWindow):
         x_mhz, y_db = values
         self.trace.setData(x_mhz, y_db)
 
+    def _update_scan_button(self):
+        if self.scanning:
+            return
+        ready = self.worker is not None and self.record_btn.isEnabled()
+        permitted = (
+            ready
+            and self.mode.currentData() == "oneseg"
+            and not self.auto_gain.isChecked()
+            and not bool(self.record_btn.property("active"))
+        )
+        self.scan_button.setEnabled(permitted)
+        self.scan_button.setToolTip(
+            "Scan is available after Start receiver, in 1seg RF research mode, "
+            "with Automatic gain OFF and no active I/Q recording."
+        )
+
+    def _scan_controls(self, running: bool):
+        self.mode.setEnabled(not running)
+        self.channel.setEnabled(not running and self.mode.currentData() == "oneseg")
+        self.frequency.setEnabled(not running)
+        self.ppm.setEnabled(not running)
+        self.auto_gain.setEnabled(not running)
+        self.gain.setEnabled(not running and not self.auto_gain.isChecked())
+        self.record_btn.setEnabled(not running and self.worker is not None)
+        self.short_capture_btn.setEnabled(not running and self.worker is not None)
+        self.wfm.setEnabled(not running and self.mode.currentData() == "sdr")
+        self.scan_tune_button.setEnabled(not running and bool(
+            self.scan_table.selectedItems()
+        ))
+        self.scan_export_button.setEnabled(not running and bool(self.scan_rows))
+
+    def _scan_clicked(self):
+        if self.worker is None:
+            return
+        if self.scanning:
+            self.worker.cancel_scan()
+            self.scan_button.setEnabled(False)
+            self.scan_note.setText("Stopping RF scan after current USB read…")
+            return
+        if self.mode.currentData() != "oneseg" or self.auto_gain.isChecked():
+            QMessageBox.information(
+                self, "Fixed gain required",
+                "Select 1seg RF research and switch Automatic RF gain OFF first. "
+                "Use a fixed gain (start around -9.9 dB for overloaded signals)."
+            )
+            return
+        if self.record_btn.property("active"):
+            QMessageBox.information(
+                self, "Stop recording", "Stop I/Q recording before running the RF scan."
+            )
+            return
+        self.scan_rows = []
+        self.scan_table.setRowCount(0)
+        self.scanning = True
+        self._scan_controls(True)
+        self.scan_button.setText("Cancel RF scan")
+        self.scan_button.setEnabled(True)
+        self.scan_note.setText(
+            "Scanning 40 physical RF channels with fixed gain; "
+            "no broadcast/ISDB-T identity is being decoded."
+        )
+        self.worker.request("scan")
+
+    def _scan_started(self):
+        self.status.setText("Scanning physical UHF channels 13–52…")
+
+    def _scan_measurement(self, data):
+        self.scan_note.setText(
+            f"Measured {self.scan_table.rowCount() + 1}/40: "
+            f"{data['physical_channel']}ch; assessment after baseline scan."
+        )
+        self._append_scan_row(data)
+
+    def _append_scan_row(self, data):
+        index = self.scan_table.rowCount()
+        self.scan_table.insertRow(index)
+        columns = [
+            str(data["physical_channel"]),
+            f"{data['frequency_hz'] / 1e6:.6f}",
+            f"{data['power_dbfs']:.2f}",
+            f"{data['relative_db']:+.2f}",
+            f"{data['clipping_percent']:.2f}",
+            data["status"],
+        ]
+        for col, value in enumerate(columns):
+            cell = QTableWidgetItem(value)
+            cell.setData(Qt.ItemDataRole.UserRole, int(data["physical_channel"]))
+            self.scan_table.setItem(index, col, cell)
+
+    def _scan_complete(self, result):
+        self.scanning = False
+        self.scan_rows = result.get("rows", [])
+        self.scan_table.setRowCount(0)
+        for row in self.scan_rows:
+            self._append_scan_row(row)
+        self._scan_controls(False)
+        self.scan_button.setText("Scan UHF 13–52 (RF)")
+        self._update_scan_button()
+        candidates = sum(
+            row["status"] == "RF CANDIDATE (NOT TV LOCK)"
+            for row in self.scan_rows
+        )
+        overloaded = sum(
+            row["status"] == "OVERLOAD / RETEST" for row in self.scan_rows
+        )
+        if result.get("error"):
+            self.scan_note.setText(f"Scan error: {result['error']}")
+        else:
+            state = "cancelled" if result.get("cancelled") else "complete"
+            self.scan_note.setText(
+                f"RF scan {state}: {len(self.scan_rows)} measured, "
+                f"{candidates} stronger-than-median RF candidates, "
+                f"{overloaded} overloaded. These are NOT identified TV services."
+            )
+
+    def _scan_selection_changed(self):
+        self.scan_tune_button.setEnabled(
+            not self.scanning and bool(self.scan_table.selectedItems())
+        )
+
+    def _tune_scan_selection(self):
+        row = self.scan_table.currentRow()
+        if row < 0 or self.scanning or self.worker is None:
+            return
+        cell = self.scan_table.item(row, 0)
+        if cell is None:
+            return
+        ch = int(cell.data(Qt.ItemDataRole.UserRole))
+        self.channel.setValue(ch)
+        self.status.setText(
+            f"Tuning RF {ch}ch (not yet an identified TV service)"
+        )
+
+    def _export_scan(self):
+        if not self.scan_rows or self.scanning:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save RF scan measurements", str(Path.home() / "oneseg_rf_scan.csv"),
+            "CSV (*.csv)",
+        )
+        if not path:
+            return
+        path = Path(path)
+        if path.suffix.lower() != ".csv":
+            path = path.with_suffix(".csv")
+        if path.exists():
+            if QMessageBox.question(
+                self, "Overwrite scan?", f"Overwrite {path}?"
+            ) != QMessageBox.StandardButton.Yes:
+                return
+        columns = [
+            "physical_channel", "frequency_hz", "power_dbfs", "rms",
+            "clipping_percent", "relative_db", "status",
+        ]
+        try:
+            with path.open("w", encoding="utf-8-sig", newline="") as output:
+                writer = csv.DictWriter(output, fieldnames=columns)
+                writer.writeheader()
+                writer.writerows(self.scan_rows)
+        except OSError as exc:
+            QMessageBox.warning(self, "Save scan failed", str(exc))
+            return
+        self.status.setText(f"RF scan saved: {path.name}")
+
     def _play_ts(self):
         if self.player is not None:
             self.player.stop()
