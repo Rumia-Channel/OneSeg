@@ -242,3 +242,43 @@ sync-reader path still reports native access violations, do not
 repeat the capture test: record the `pyrtlsdr` / bundled
 `librtlsdr` versions, USB hardware ID and whether standalone
 SDR++ still works; the native driver/DLL combination needs review.
+
+
+## Shortened TMCC cyclic parity and layer diagnostics
+
+The next diagnostic step after strong CP alignment and pilot coherence is to
+verify the **82 parity bits** protecting ISDB-T TMCC B20..B121. Per the
+Japanese digital terrestrial television transmission rules, TMCC uses a
+shortened (184,102) difference-set cyclic code derived from (273,191).
+The exact degree-82 generator polynomial is recorded in
+[Japan's transmission rules, Annex 12 paragraph 2](https://laws.e-gov.go.jp/law/423M60000008087).
+This is NOT the 188-byte MPEG-TS Reed-Solomon code and does not use the
+15-bit energy dispersal PRBS. The code computes the binary polynomial
+remainder of B20..B203 and accepts only zero-syndrome frames.
+
+\`oneseg-pilots\` now attempts to align candidate 16-bit TMCC sync words
+(B1..B16) with a **full 204-symbol frame**, verifies B20..B203 and only
+then parses the partial-reception flag and layers A/B/C (modulation,
+convolutional coding rate, Mode-3 interleaving and segment count).
+Results are printed as the count of \`cyclic-parity-verified frames\`,
+and accepted records are saved under \`bch_parity_verified_frames\` in
+the JSON report. No bit errors are corrected. A nonzero count is
+evidence of a protected TMCC frame, **not evidence that MPEG-TS or
+live television is already supported**.
+
+The prior ch20_safe.c64 CLI output (0 dB RF gain, repeated CP ~0.98,
+pilot +12 bins / 0.974 coherence, six single / two 204-spaced sync
+candidates) is promising but is not, by itself, a parity-verified TMCC
+frame. With the matching sidecar still beside the capture, run:
+
+\`\`\`powershell
+git pull
+uv sync
+uv run oneseg-pilots ch20_safe.c64 --seconds 1.2 --json ch20_tmcc.json
+\`\`\`
+
+Inspect \`bch_parity_verified_frames\` in the output JSON. If none pass,
+also try \`--seconds 3.0\` to search more symbols. In that case the
+next step is detailed per-carrier differential-phase and frame timing
+analysis using the *same* uploaded .c64/.json, not declaring a station
+from sync candidates alone.
