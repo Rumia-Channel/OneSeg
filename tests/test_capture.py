@@ -15,13 +15,20 @@ class FakeSdr:
         self.center_freq = None
         self.gain = None
         self.freq_correction = 0
+        self.cancelled = False
 
-    def read_samples(self, count):
-        self.calls += 1
-        if count != READ_SAMPLES:
-            raise ValueError("unaligned RTL-SDR read")
-        # Different amplitudes reveal an extra warm-up buffer.
-        return np.full(count, self.calls / 10 + 1j, dtype=np.complex64)
+    def read_samples_async(self, callback, num_samples):
+        assert num_samples == READ_SAMPLES
+        for _ in range(100):
+            if self.cancelled:
+                break
+            self.calls += 1
+            callback(np.full(
+                num_samples, self.calls / 10 + 1j, dtype=np.complex64
+            ), self)
+
+    def cancel_read_async(self):
+        self.cancelled = True
 
     def close(self):
         self.closed = True
@@ -60,11 +67,13 @@ def test_refuses_to_overwrite_and_bad_channel(tmp_path):
 
 def test_device_closed_and_no_partial_output_after_failed_read(tmp_path):
     class BrokenSdr(FakeSdr):
-        def read_samples(self, count):
+        def read_samples_async(self, callback, num_samples):
             self.calls += 1
-            if self.calls == 2:
-                return np.empty(0, dtype=np.complex64)
-            return np.full(count, self.calls / 10 + 1j, dtype=np.complex64)
+            callback(np.full(
+                num_samples, self.calls / 10 + 1j, dtype=np.complex64
+            ), self)
+            self.calls += 1
+            callback(np.empty(0, dtype=np.complex64), self)
 
     fake = BrokenSdr()
     target = tmp_path / "incomplete.c64"
