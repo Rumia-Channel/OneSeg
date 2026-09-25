@@ -47,8 +47,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(shell)
 
         self.notice = QLabel(
-            "1seg: RF tuning / I-Q capture only. Video, audio and MPEG-TS "
-            "decoding are NOT implemented in this prototype."
+            "1seg live video decoding is not integrated. Offline TS, audio/video "
+            "playback and RF/I-Q analysis are available."
         )
         self.notice.setWordWrap(True)
         self.notice.setStyleSheet(

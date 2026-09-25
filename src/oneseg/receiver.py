@@ -12,6 +12,7 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from .dsp import DEFAULT_SAMPLE_RATE, power_spectrum
+from .ppm import PpmCorrection
 from .wfm import AudioQueue, MonoWfm
 
 READ_SIZE = 131_072
@@ -51,6 +52,7 @@ class Receiver(QThread):
         audio = None
         demod = MonoWfm()
         audio_enabled = False
+        ppm_correction = PpmCorrection()
 
         def close_file():
             nonlocal file
@@ -72,7 +74,7 @@ class Receiver(QThread):
 
             device = RtlSdr()
             device.sample_rate = DEFAULT_SAMPLE_RATE
-            device.freq_correction = self.ppm
+            ppm_correction.apply(device, self.ppm)
             device.center_freq = self.frequency_hz
             device.gain = self.gain
             self.device_ready.emit()
@@ -92,7 +94,7 @@ class Receiver(QThread):
                                 self.message.emit(f"Tuned to {next_hz / 1e6:.6f} MHz")
                         elif command == "settings":
                             self.ppm, self.gain = args
-                            device.freq_correction = int(self.ppm)
+                            ppm_correction.apply(device, self.ppm)
                             device.gain = self.gain
                         elif command == "mode":
                             self.mode = str(args[0])

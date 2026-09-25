@@ -62,3 +62,9 @@ If the GUI reports `Could not open SDR (device index = 0)`, the error occurs at 
 4. Run `uv run oneseg-doctor`. It enumerates compatible devices and attempts a device open/close test without modifying drivers. If another SDR app can open the tuner but this cannot, collect its driver and DLL versions before changing drivers.
 
 Reference: [RTL-SDR guide to usb_open_error -12](https://www.rtl-sdr.com/signalseverywhere-windows-10-usb_open_error-12-fix/) and [libusb Windows drivers](https://github.com/libusb/libusb/wiki/Windows). Changing the driver to WinUSB generally prevents the original vendor tuner app from using the same interface until its driver is restored.
+
+## FC0013 detected, but `Could not set freq. offset to 0 ppm`
+
+If Zadig is installed correctly and the terminal logs `Found Fitipower FC0013 tuner`, USB access is already working. Some `librtlsdr` builds return `LIBUSB_ERROR_INVALID_PARAM (-2)` for a PPM setting equal to the one already in use. On a fresh RTL-SDR open the default is 0 ppm, so requesting 0 is a redundant call, *not a bad USB driver*. The app now skips redundant PPM writes and only invokes `freq_correction` when it changes, including nonzero -> 0.
+
+After `git pull` and `uv sync`, retry `uv run oneseg`. Once the spectrum works, try FM in SDR mode (choose a station available in your region). Live 1seg video is still not integrated.
