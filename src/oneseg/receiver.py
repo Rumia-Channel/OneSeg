@@ -15,6 +15,7 @@ from .dsp import DEFAULT_SAMPLE_RATE, power_spectrum
 from .ppm import PpmCorrection
 from .quality import block_quality
 from .channel_scan import scan_channels
+from .continuous import CaptureCancelled, record_stream
 from .wfm import AudioQueue, MonoWfm
 
 READ_SIZE = 131_072
@@ -59,7 +60,6 @@ class Receiver(QThread):
     def run(self):
         device = None
         file = None
-        capture_remaining = None
         audio = None
         demod = MonoWfm()
         audio_enabled = False
@@ -67,12 +67,11 @@ class Receiver(QThread):
         overload_reported = False
 
         def close_file():
-            nonlocal file, capture_remaining
+            nonlocal file
             if file is not None:
                 file.close()
                 file = None
                 self.recording.emit(False)
-            capture_remaining = None
 
         def close_audio():
             nonlocal audio
@@ -166,14 +165,50 @@ class Receiver(QThread):
                                 except Exception as exc:
                                     audio_enabled = False
                                     self.message.emit(f"Audio unavailable: {exc}")
-                        elif command in ("record", "capture_short"):
+                        elif command == "capture_short":
                             close_file()
-                            capture_remaining = (
-                                round(float(args[1]) * DEFAULT_SAMPLE_RATE)
-                                if command == "capture_short" else None
-                            )
-                            if capture_remaining is not None and capture_remaining <= 0:
+                            path = Path(args[0])
+                            count = round(float(args[1]) * DEFAULT_SAMPLE_RATE)
+                            if count <= 0:
                                 raise ValueError("capture duration must be positive")
+                            close_audio()
+                            self.recording.emit(True)
+                            self.message.emit(
+                                "Recording continuous asynchronous I/Q "
+                                "(spectrum paused; not a TS file)..."
+                            )
+                            try:
+                                record_stream(
+                                    device,
+                                    path,
+                                    samples_required=count,
+                                    metadata={
+                                        "center_frequency_hz": self.frequency_hz,
+                                        "gain_db": self.gain,
+                                        "ppm": int(self.ppm),
+                                        "mode": self.mode,
+                                        "started_utc": datetime.now(
+                                            timezone.utc
+                                        ).isoformat(),
+                                    },
+                                    cancelled=self.stop_event.is_set,
+                                )
+                            except CaptureCancelled:
+                                self.message.emit("I/Q capture cancelled")
+                            except Exception as exc:
+                                self.message.emit(f"Continuous I/Q capture failed: {exc}")
+                                self.failed.emit(
+                                    f"Continuous I/Q capture failed: {exc}"
+                                )
+                            else:
+                                self.message.emit(
+                                    f"Continuous I/Q capture complete: {path.name}"
+                                )
+                            finally:
+                                self.recording.emit(False)
+                                demod.reset()
+                        elif command == "record":
+                            close_file()
                             path = Path(args[0])
                             path.parent.mkdir(parents=True, exist_ok=True)
                             file = path.open("wb")
@@ -186,19 +221,25 @@ class Receiver(QThread):
                                 "gain_db": self.gain,
                                 "mode": self.mode,
                                 "started_utc": datetime.now(timezone.utc).isoformat(),
-                                "capture_samples": capture_remaining,
+                                "capture_samples": None,
+                                "acquisition": "sync_stream_not_continuity_verified",
                                 "decoding_status": "RAW_IQ_NOT_TS",
                             }
                             try:
                                 path.with_suffix(path.suffix + ".json").write_text(
-                                    json.dumps(metadata, ensure_ascii=False, indent=2),
+                                    json.dumps(
+                                        metadata, ensure_ascii=False, indent=2
+                                    ),
                                     encoding="utf-8",
                                 )
                             except Exception:
                                 close_file()
                                 raise
                             self.recording.emit(True)
-                            self.message.emit(f"Recording: {path.name}")
+                            self.message.emit(
+                                f"Recording sync I/Q: {path.name} "
+                                "(not suitable for frame-continuity tests)"
+                            )
                         elif command == "record_stop":
                             close_file()
                 except Empty:
@@ -214,16 +255,7 @@ class Receiver(QThread):
                             "disable Automatic RF gain and reduce gain (try -9.9 dB)"
                         )
                 if file is not None:
-                    count = (
-                        len(samples) if capture_remaining is None
-                        else min(len(samples), capture_remaining)
-                    )
-                    np.asarray(samples[:count], dtype="<c8").tofile(file)
-                    if capture_remaining is not None:
-                        capture_remaining -= count
-                        if capture_remaining == 0:
-                            close_file()
-                            self.message.emit("Fixed-duration I/Q capture complete (not TS)")
+                    np.asarray(samples, dtype="<c8").tofile(file)
                 if audio_enabled and self.mode == "sdr" and audio is not None:
                     audio.feed(demod.process(samples))
                 x_mhz, y_db = power_spectrum(
