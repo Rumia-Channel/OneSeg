@@ -392,3 +392,70 @@ The next validation is correctly aligned rate-2/3
 depuncturing/Viterbi decoding, byte deinterleaving, energy
 descrambling and RS/TS packet tests. Do not label a failed
 candidate or a random byte stream as television.
+
+
+## First real, partial 20ch MPEG-TS recovered from uploaded fixture
+
+**Critical new milestone:** the uploaded \`ch20_deinterleaved.npz\`
+contains actual ISDB-T convolutionally encoded Layer-A payload, not
+only random-looking QPSK. Applying the existing rate-2/3 Viterbi
+trellis to the first **1020 OFDM rows starting from the parity-verified
+TMCC FFT row 68** gives MPEG-TS sync byte \`0x47\` at
+**the same position 139 modulo 204 for 297 of the first
+320 candidate raw blocks** (all 64/64 in each of the first four
+complete frames). This periodicity was not fabricated.
+
+After 12-way byte deinterleaving and searching all 64
+possible ISDB-T PRBS frame phases by actual **RS(204,188) parity**,
+the first 1020-row offline experiment selected phase **56**.
+**203 real 188-byte MPEG-TS packets** passed ALL 16 RS parity
+syndromes with **zero byte corrections** (from 319 full
+post-sync 204-byte candidates; 11 initial blocks contain byte
+deinterleaver warmup and 105 subsequent blocks were rejected).
+These packets include real audio PES start codes on PID
+2179 (0x883), video PES start codes on PID 2177 (0x881),
+and null packets on PID 8191 (0x1fff). In particular,
+PID 2179 contains \`000001c0\` and PID 2177
+contains \`000001e0\`. Do not confuse byte-level PES evidence
+with proof that an entire picture can yet be played.
+
+**This is REAL, OFFLINE PARTIAL TS recovery, not real-time TV.**
+The sample spans about 3 seconds of RF, but the recovered
+203 clean packets omit corrupt intervals; no fake MPEG packets
+are inserted. This partial TS had **no PAT (PID 0)**
+among the 203 RS-verified packets and is unlikely to show
+complete video in a normal transport-stream player without
+a clean PAT/PMT and enough continuous H.264/AAC PES data.
+
+New CLI (Python 3.12 / uv only, USB tuner not required):
+
+\`\`\`powershell
+git pull
+uv sync
+uv run oneseg-recover ch20_deinterleaved.npz --output ch20_partial.ts --max-ofdm-symbols 1020
+uv run oneseg-ts inspect ch20_partial.ts
+\`\`\`
+
+The CLI validates fixture metadata, uses the previously
+verified TMCC frame index to begin rate-2/3 Viterbi decoding,
+finds 204-byte sync period, undoes byte interleaving,
+calibrates the energy-descrambler reset phase by RS codeword
+validation rather than guessing, then applies outer RS
+error correction and MPEG-TS packet checks. It
+**writes only authentic passing packets**, with
+a \`ch20_partial.ts.json\` diagnostics file (RS phase,
+accepted/rejected indices, PID counts, PAT/PMT
+status, continuity errors). The actual \`reedsolo\` code
+may correct additional damaged packets beyond the 203
+strict **zero-syndrome** words independently verified
+in the uploaded sample.
+
+The capture supplying the fixture had 11.32% full-scale
+I/Q hits and its symbols diverge after early frames.
+A new unclipped fixture of the *same* 20ch at slightly
+lower manual gain may improve TS continuity and video
+decodability, but first use the already captured clean
+0-dB recording at UTC 12:16 with \`oneseg-pilots\`
+→ \`oneseg-deinterleave\` → \`oneseg-recover\`.
+Do not imply video will render from this partial TS
+or that a streaming I/Q → TS GUI pipeline is integrated.
