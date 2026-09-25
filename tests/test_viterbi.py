@@ -32,6 +32,6 @@ def test_corrects_corrupted_soft_inputs():
 
 def test_erasure_and_length_validation():
     with pytest.raises(ValueError):
-        depuncture(np.array([0, 1, 1], np.float32), "2/3")
+        depuncture(np.array([0, 1, 1, 0], np.float32), "2/3")
     with pytest.raises(ValueError):
         depuncture(np.array([-0.1, 1], np.float32), "1/2")
