@@ -49,17 +49,19 @@ class Receiver(QThread):
     def run(self):
         device = None
         file = None
+        capture_remaining = None
         audio = None
         demod = MonoWfm()
         audio_enabled = False
         ppm_correction = PpmCorrection()
 
         def close_file():
-            nonlocal file
+            nonlocal file, capture_remaining
             if file is not None:
                 file.close()
                 file = None
                 self.recording.emit(False)
+            capture_remaining = None
 
         def close_audio():
             nonlocal audio
@@ -113,8 +115,14 @@ class Receiver(QThread):
                                 except Exception as exc:
                                     audio_enabled = False
                                     self.message.emit(f"Audio unavailable: {exc}")
-                        elif command == "record":
+                        elif command in ("record", "capture_short"):
                             close_file()
+                            capture_remaining = (
+                                round(float(args[1]) * DEFAULT_SAMPLE_RATE)
+                                if command == "capture_short" else None
+                            )
+                            if capture_remaining is not None and capture_remaining <= 0:
+                                raise ValueError("capture duration must be positive")
                             path = Path(args[0])
                             path.parent.mkdir(parents=True, exist_ok=True)
                             file = path.open("wb")
@@ -127,6 +135,8 @@ class Receiver(QThread):
                                 "gain_db": self.gain,
                                 "mode": self.mode,
                                 "started_utc": datetime.now(timezone.utc).isoformat(),
+                                "capture_samples": capture_remaining,
+                                "decoding_status": "RAW_IQ_NOT_TS",
                             }
                             try:
                                 path.with_suffix(path.suffix + ".json").write_text(
@@ -145,7 +155,16 @@ class Receiver(QThread):
 
                 samples = np.asarray(device.read_samples(READ_SIZE), dtype=np.complex64)
                 if file is not None:
-                    np.asarray(samples, dtype="<c8").tofile(file)
+                    count = (
+                        len(samples) if capture_remaining is None
+                        else min(len(samples), capture_remaining)
+                    )
+                    np.asarray(samples[:count], dtype="<c8").tofile(file)
+                    if capture_remaining is not None:
+                        capture_remaining -= count
+                        if capture_remaining == 0:
+                            close_file()
+                            self.message.emit("Fixed-duration I/Q capture complete (not TS)")
                 if audio_enabled and self.mode == "sdr" and audio is not None:
                     audio.feed(demod.process(samples))
                 x_mhz, y_db = power_spectrum(
