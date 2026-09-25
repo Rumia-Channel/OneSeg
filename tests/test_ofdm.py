@@ -42,4 +42,4 @@ def test_find_periodic_cp_and_fft_correlates_symbols():
         np.linalg.norm(observed) * np.linalg.norm(expected)
     )
     assert corr > 0.99
-    assert central_carriers(fft, 3).shape[1] == 325
+    assert central_carriers(fft, 3).shape[1] == 433

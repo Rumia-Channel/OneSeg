@@ -138,7 +138,7 @@ def central_carriers(constellations: np.ndarray, mode: int) -> np.ndarray:
         raise ValueError("invalid OFDM mode")
     if constellations.ndim != 2 or constellations.shape[1] != MODE_FFT[mode]:
         raise ValueError("incorrect FFT shape")
-    half = 54 * mode
+    half = 54 * (2 ** (mode - 1))
     middle = MODE_FFT[mode] // 2
     return constellations[:, middle - half : middle + half + 1]
 
