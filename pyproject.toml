@@ -12,6 +12,7 @@ dependencies = [
   "pyqtgraph>=0.13,<1",
   "sounddevice>=0.5,<1",
   "reedsolo>=1.7,<2",
+  "av>=15,<19",
 ]
 
 [project.scripts]

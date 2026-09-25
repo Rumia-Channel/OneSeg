@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QSettings
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from .channels import physical_channel_hz
 from .receiver import Receiver
+from .player import TransportPlayer
 
 
 class MainWindow(QMainWindow):
@@ -36,6 +38,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("OneSeg — DS-DT308SV SDR / 1seg research")
         self.resize(1050, 720)
         self.worker: Receiver | None = None
+        self.player: TransportPlayer | None = None
         self.settings = QSettings("Rumia-Channel", "OneSeg")
 
         shell = QWidget()
@@ -104,15 +107,23 @@ class MainWindow(QMainWindow):
         self.trace = self.plot.plot(pen=pg.mkPen("#57c8ed", width=1.5))
         layout.addWidget(self.plot, 1)
 
+        self.video = QLabel("Open an already decoded .ts file to play video/audio")
+        self.video.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video.setMinimumHeight(140)
+        self.video.setStyleSheet("background:#10151b;color:#b0b7be;")
+        layout.addWidget(self.video, 1)
+
         actions = QHBoxLayout()
         self.start_btn = QPushButton("Start receiver")
         self.stop_btn = QPushButton("Stop")
         self.record_btn = QPushButton("Record I/Q…")
+        self.play_ts_btn = QPushButton("Play decoded TS…")
         self.stop_btn.setEnabled(False)
         self.record_btn.setEnabled(False)
         actions.addWidget(self.start_btn)
         actions.addWidget(self.stop_btn)
         actions.addWidget(self.record_btn)
+        actions.addWidget(self.play_ts_btn)
         layout.addLayout(actions)
 
         self.status = QLabel("Stopped")
@@ -128,6 +139,7 @@ class MainWindow(QMainWindow):
         self.start_btn.clicked.connect(self._start)
         self.stop_btn.clicked.connect(self._stop)
         self.record_btn.clicked.connect(self._record)
+        self.play_ts_btn.clicked.connect(self._play_ts)
         self._mode_changed()
 
     def _mode_changed(self, *args):
@@ -192,6 +204,39 @@ class MainWindow(QMainWindow):
         x_mhz, y_db = values
         self.trace.setData(x_mhz, y_db)
 
+    def _play_ts(self):
+        if self.player is not None:
+            self.player.stop()
+            self.play_ts_btn.setEnabled(False)
+            return
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Open already decoded MPEG-TS", str(Path.home()),
+            "MPEG Transport Stream (*.ts);;All files (*.*)",
+        )
+        if not filename:
+            return
+        self.player = TransportPlayer(Path(filename))
+        self.player.image_ready.connect(self._show_frame)
+        self.player.status.connect(self.status.setText)
+        self.player.failed.connect(self._error)
+        self.player.finished.connect(self._player_finished)
+        self.play_ts_btn.setText("Stop TS player")
+        self.player.start()
+
+    def _show_frame(self, image):
+        image_size = self.video.size()
+        pixmap = QPixmap.fromImage(image)
+        self.video.setPixmap(pixmap.scaled(
+            image_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        ))
+
+    def _player_finished(self):
+        self.player = None
+        self.play_ts_btn.setEnabled(True)
+        self.play_ts_btn.setText("Play decoded TS…")
+
     def _record(self):
         if self.worker is None:
             return
@@ -242,6 +287,11 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
+        if self.player and self.player.isRunning():
+            self.player.stop()
+            if not self.player.wait(3000):
+                event.ignore()
+                return
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             if not self.worker.wait(3000):
