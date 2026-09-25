@@ -22,7 +22,6 @@ from .dsp import DEFAULT_SAMPLE_RATE, ONESEG_RATE
 from .ofdm import extract_ofdm_symbols, find_symbol_lock
 from .tmcc import verify_frames_from_soft
 from .quality import block_quality
-from .layer_a import extract_layer_a_carriers, save_layer_a_fixture
 
 MODE = 3
 ACTIVE = 433
@@ -246,6 +245,7 @@ def analyze_capture(
         **verify_frames_from_soft(soft),
     }
     if layer_a_output is not None:
+        from .layer_a import extract_layer_a_carriers, save_layer_a_fixture
         payload = extract_layer_a_carriers(
             equalized, pilot_phase=alignment.symbol_phase
         )
