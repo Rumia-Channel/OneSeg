@@ -14,6 +14,7 @@ from PySide6.QtCore import QThread, Signal
 from .dsp import DEFAULT_SAMPLE_RATE, power_spectrum
 from .ppm import PpmCorrection
 from .quality import block_quality
+from .channel_scan import scan_channels
 from .wfm import AudioQueue, MonoWfm
 
 READ_SIZE = 131_072
@@ -25,6 +26,9 @@ class Receiver(QThread):
     failed = Signal(str)
     recording = Signal(bool)
     device_ready = Signal()
+    scan_started = Signal()
+    scan_measurement = Signal(object)
+    scan_complete = Signal(object)
 
     def __init__(
         self,
@@ -40,12 +44,17 @@ class Receiver(QThread):
         self.gain = gain
         self.commands = Queue()
         self.stop_event = Event()
+        self.scan_cancel = Event()
 
     def request(self, command: str, *args):
         self.commands.put((command, args))
 
     def stop(self):
+        self.scan_cancel.set()
         self.stop_event.set()
+
+    def cancel_scan(self):
+        self.scan_cancel.set()
 
     def run(self):
         device = None
@@ -96,6 +105,47 @@ class Receiver(QThread):
                                 device.center_freq = next_hz
                                 demod.reset()
                                 self.message.emit(f"Tuned to {next_hz / 1e6:.6f} MHz")
+                        elif command == "scan":
+                            if file is not None or self.mode != "oneseg" or self.gain == "auto":
+                                self.message.emit(
+                                    "RF scan requires 1seg mode, no recording, and fixed manual gain"
+                                )
+                                self.scan_complete.emit({
+                                    "rows": [], "cancelled": True,
+                                    "error": "invalid receiver settings for scan",
+                                })
+                                continue
+                            self.scan_cancel.clear()
+                            self.scan_started.emit()
+                            self.message.emit("Scanning physical UHF channels 13–52 (RF only)…")
+                            try:
+                                rows, cancelled = scan_channels(
+                                    device,
+                                    should_stop=lambda: (
+                                        self.stop_event.is_set()
+                                        or self.scan_cancel.is_set()
+                                    ),
+                                    on_measurement=lambda row: self.scan_measurement.emit(
+                                        row.as_dict()
+                                    ),
+                                )
+                                demod.reset()
+                                self.scan_complete.emit({
+                                    "rows": [row.as_dict() for row in rows],
+                                    "cancelled": cancelled,
+                                    "error": "",
+                                })
+                                self.message.emit(
+                                    f"RF scan {'cancelled' if cancelled else 'finished'}: "
+                                    f"{len(rows)} physical channels measured (NOT TV services)"
+                                )
+                            except Exception as scan_exc:
+                                self.scan_complete.emit({
+                                    "rows": [], "cancelled": True,
+                                    "error": str(scan_exc),
+                                })
+                                self.message.emit(f"RF scan error: {scan_exc}")
+                            overload_reported = False
                         elif command == "settings":
                             self.ppm, self.gain = args
                             ppm_correction.apply(device, self.ppm)
