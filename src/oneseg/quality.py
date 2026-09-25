@@ -43,7 +43,10 @@ def recording_quality(path: Path) -> dict:
     count = clipped = 0
     mean_power_times_n = 0.0
     with path.open("rb") as stream:
-        while chunk := np.fromfile(stream, dtype="<c8", count=262144):
+        while True:
+            chunk = np.fromfile(stream, dtype="<c8", count=262144)
+            if len(chunk) == 0:
+                break
             hits, n, power = block_quality(chunk)
             count += n
             clipped += hits
