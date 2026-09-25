@@ -68,3 +68,18 @@ Reference: [RTL-SDR guide to usb_open_error -12](https://www.rtl-sdr.com/signals
 If Zadig is installed correctly and the terminal logs `Found Fitipower FC0013 tuner`, USB access is already working. Some `librtlsdr` builds return `LIBUSB_ERROR_INVALID_PARAM (-2)` for a PPM setting equal to the one already in use. On a fresh RTL-SDR open the default is 0 ppm, so requesting 0 is a redundant call, *not a bad USB driver*. The app now skips redundant PPM writes and only invokes `freq_correction` when it changes, including nonzero -> 0.
 
 After `git pull` and `uv sync`, retry `uv run oneseg`. Once the spectrum works, try FM in SDR mode (choose a station available in your region). Live 1seg video is still not integrated.
+
+## Capture a short real-world one-seg IQ fixture (Windows 11, uv only)
+
+A normal SDR screenshot **cannot** establish that the receiver is locked to ISDB-T or that the decoder will work on real broadcasts. Use a **physical channel that actually carries television in your region**, connect a suitable UHF antenna, and close the GUI/SDR++ before capturing.
+
+```powershell
+git pull
+uv sync
+uv run oneseg-capture --channel 27 --seconds 3 --output oneseg_ch27.c64
+uv run oneseg-ofdm oneseg_ch27.c64 --seconds 0.5 --output ofdm_ch27.npz
+```
+
+Replace 27 with your local station's UHF physical channel. Capture 3 seconds at 2.048 MS/s: 6,144,000 complex64 samples (~49 MB decimal) plus `oneseg_ch27.c64.json` with tuning, gain and PPM. This command opens the tuner, discards one warm-up buffer, records a fixed number of aligned reads, closes the tuner, and never overwrites an existing recording. It does **not** create TV video or `.ts` on its own. Retain both files when reporting failures; a brief screenshot is not a substitute for actual I/Q samples.
+
+This test vector is needed to implement and verify stable central-segment filtering, pilot equalization, TMCC, complete ISDB-T deinterleaving and frame alignment. Prior isolated FEC tests do not validate an over-the-air I/Q-to-TS chain.

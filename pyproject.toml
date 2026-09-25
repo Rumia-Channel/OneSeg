@@ -21,6 +21,7 @@ oneseg-inspect = "oneseg.inspect:main"
 oneseg-ofdm = "oneseg.ofdm:main"
 oneseg-ts = "oneseg.ts_cli:main"
 oneseg-doctor = "oneseg.diagnostics:main"
+oneseg-capture = "oneseg.capture:main"
 
 [build-system]
 requires = ["hatchling"]
