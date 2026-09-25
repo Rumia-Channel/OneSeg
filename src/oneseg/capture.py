@@ -27,7 +27,7 @@ def capture_channel(
     gain: float | str = "auto",
     device_factory: Callable | None = None,
 ) -> dict:
-    """Record 3 seconds of contiguous async I/Q plus an atomic metadata sidecar."""
+    """Record raw I/Q with a dedicated USB reader and separate writer thread."""
     if not 0.25 <= seconds <= 30:
         raise ValueError("capture duration must be between 0.25 and 30 seconds")
     if not -200 <= ppm <= 200:

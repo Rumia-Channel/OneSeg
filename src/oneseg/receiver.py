@@ -174,7 +174,7 @@ class Receiver(QThread):
                             close_audio()
                             self.recording.emit(True)
                             self.message.emit(
-                                "Recording continuous asynchronous I/Q "
+                                "Recording dedicated-reader I/Q "
                                 "(spectrum paused; not a TS file)..."
                             )
                             try:
@@ -196,13 +196,13 @@ class Receiver(QThread):
                             except CaptureCancelled:
                                 self.message.emit("I/Q capture cancelled")
                             except Exception as exc:
-                                self.message.emit(f"Continuous I/Q capture failed: {exc}")
+                                self.message.emit(f"I/Q capture failed: {exc}")
                                 self.failed.emit(
                                     f"Continuous I/Q capture failed: {exc}"
                                 )
                             else:
                                 self.message.emit(
-                                    f"Continuous I/Q capture complete: {path.name}"
+                                    f"I/Q capture complete: {path.name}"
                                 )
                             finally:
                                 self.recording.emit(False)
