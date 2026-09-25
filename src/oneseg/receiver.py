@@ -13,6 +13,7 @@ from PySide6.QtCore import QThread, Signal
 
 from .dsp import DEFAULT_SAMPLE_RATE, power_spectrum
 from .ppm import PpmCorrection
+from .quality import block_quality
 from .wfm import AudioQueue, MonoWfm
 
 READ_SIZE = 131_072
@@ -54,6 +55,7 @@ class Receiver(QThread):
         demod = MonoWfm()
         audio_enabled = False
         ppm_correction = PpmCorrection()
+        overload_reported = False
 
         def close_file():
             nonlocal file, capture_remaining
@@ -154,6 +156,14 @@ class Receiver(QThread):
                     pass
 
                 samples = np.asarray(device.read_samples(READ_SIZE), dtype=np.complex64)
+                if not overload_reported:
+                    full_scale, block_size, _ = block_quality(samples)
+                    if block_size and full_scale / block_size > 0.05:
+                        overload_reported = True
+                        self.message.emit(
+                            f"Warning: {100 * full_scale / block_size:.1f}% full-scale I/Q; "
+                            "disable Automatic RF gain and reduce gain (try -9.9 dB)"
+                        )
                 if file is not None:
                     count = (
                         len(samples) if capture_remaining is None

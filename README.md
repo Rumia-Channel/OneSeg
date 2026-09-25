@@ -87,3 +87,19 @@ This test vector is needed to implement and verify stable central-segment filter
 ### GUI capture shortcut
 
 After starting the receiver, choose a **local active** UHF physical channel (13–52). Click `Capture 3s for decoder…` and choose a new `.c64` filename. The worker automatically stops recording after 3 seconds and writes an adjacent `.c64.json` metadata file. This does **not** decode live television. Send both files together when reporting real-world decoding failures.
+
+## Real capture quality check
+
+`uv run oneseg-quality oneseg_ch27.c64` reports sample count, complex RMS,
+and the fraction of samples where either I or Q is at full-scale (±1.0).
+Above 5% triggers an *overload warning*; it does not prove which analog gain
+stage is overloaded and is not an ISDB-T/TMCC lock result. The GUI now warns
+on a high-clipping live block and permits negative FC0013 manual gain values
+(-10 to +20 dB input range, tuner rounds to supported steps). Disable
+Automatic RF gain and try -9.9 dB first if overloaded; compare captures from
+a physically active local UHF channel at different gains.
+
+Reference for reported I/Q full-scale occupancy on the 2026-09-25 ch27
+user-supplied 3-second capture: ~49% of samples had at least one full-scale
+I/Q component. That recording is not adequate to declare video decoding
+functional, and the receiver must not invent MPEG-TS from it.
