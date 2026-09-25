@@ -141,8 +141,9 @@ def process_fixture(
     layer = layers[0]
     if (
         not report.get("tmcc_bch_verified")
-        or not report.get("partial_reception_flag", True)
-        and not passed[0].get("partial_reception_flag")
+        or not all(
+            frame.get("partial_reception_flag") is True for frame in passed
+        )
         or layer.get("modulation") != "QPSK"
         or layer.get("code_rate") != "2/3"
         or layer.get("segments") != 1
