@@ -115,7 +115,6 @@ class Receiver(QThread):
                                     "error": "invalid receiver settings for scan",
                                 })
                                 continue
-                            self.scan_cancel.clear()
                             self.scan_started.emit()
                             self.message.emit("Scanning physical UHF channels 13–52 (RF only)…")
                             try:

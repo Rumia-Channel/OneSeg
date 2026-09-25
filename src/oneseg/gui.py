@@ -330,6 +330,7 @@ class MainWindow(QMainWindow):
             "Scanning 40 physical RF channels with fixed gain; "
             "no broadcast/ISDB-T identity is being decoded."
         )
+        self.worker.scan_cancel.clear()
         self.worker.request("scan")
 
     def _scan_started(self):
