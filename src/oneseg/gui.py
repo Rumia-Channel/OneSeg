@@ -361,7 +361,18 @@ class MainWindow(QMainWindow):
 
     def _scan_complete(self, result):
         self.scanning = False
-        self.scan_rows = result.get("rows", [])
+        priority = {
+            "RF CANDIDATE (NOT TV LOCK)": 0,
+            "OVERLOAD / RETEST": 1,
+            "NO STRONG RF CONTRAST": 2,
+        }
+        self.scan_rows = sorted(
+            result.get("rows", []),
+            key=lambda row: (
+                priority.get(row["status"], 3),
+                -row["power_dbfs"],
+            ),
+        )
         self.scan_table.setRowCount(0)
         for row in self.scan_rows:
             self._append_scan_row(row)
@@ -379,10 +390,17 @@ class MainWindow(QMainWindow):
             self.scan_note.setText(f"Scan error: {result['error']}")
         else:
             state = "cancelled" if result.get("cancelled") else "complete"
+            strongest = [
+                f"{row['physical_channel']}ch ({row['relative_db']:+.1f} dB)"
+                for row in self.scan_rows
+                if row["status"] == "RF CANDIDATE (NOT TV LOCK)"
+            ][:6]
+            examples = ", ".join(strongest) if strongest else "none"
             self.scan_note.setText(
                 f"RF scan {state}: {len(self.scan_rows)} measured, "
-                f"{candidates} stronger-than-median RF candidates, "
-                f"{overloaded} overloaded. These are NOT identified TV services."
+                f"{candidates} RF candidates, {overloaded} overloaded. "
+                f"Strongest candidates: {examples}. "
+                "Not yet identified TV services."
             )
 
     def _scan_selection_changed(self):
