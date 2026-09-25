@@ -174,7 +174,7 @@ partial captures and claim live decoding.
 The **3-second GUI decoder capture button** and \`oneseg-capture\` CLI
 now use the same USB sync-reader / separate writer-thread path,
 write exact complex64 sample counts, and atomically publish the
-recording and metadata with \`"acquisition": "sync_usb_reader_threaded_iq_writer"\`.
+recording and metadata with `"acquisition": "sync_usb_reader_threaded_iq_writer"`.
 While the GUI captures, spectrum updates are paused to reduce CPU
 and USB-buffer latency. The manual \`Record I/Q…\` still uses
 synchronous reads and is **not** recommended for decoder fixtures.
@@ -201,44 +201,44 @@ BCH validation and data FEC.
 ## Windows FC0013 crash in native async recorder (libusb -6 / access violation)
 
 A Windows 11 DS-DT308SV reported native crashes with
-\`rtlsdr_demod_write_reg failed with -6\`,
-\`Capture failed: exception: access violation writing 0x24\` and a
-second access violation in \`BaseRtlSdr.__del__\`. The previous
-\`read_samples_async()/cancel_read_async()\` recorder has been
+`rtlsdr_demod_write_reg failed with -6`,
+`Capture failed: exception: access violation writing 0x24` and a
+second access violation in `BaseRtlSdr.__del__`. The previous
+`read_samples_async()/cancel_read_async()` recorder has been
 **disabled and removed from the capture path**. In upstream pyrtlsdr,
-the async read/cancel error paths can call \`self.close()\`; a second
+the async read/cancel error paths can call `self.close()`; a second
 close while native USB transfers are unwinding is hazardous. This
 is a credible failure mechanism, not a proven postmortem diagnosis
 of the specific device crash. Do not retry the old async version.
 
-The new \`oneseg-capture\` and GUI \`Capture 3s for decoder…\`
+The new `oneseg-capture` and GUI `Capture 3s for decoder…`
 issue back-to-back **synchronous raw-byte USB reads**, copying the
 reused ctypes buffer immediately. A separate Python thread performs
 u8-to-complex64 conversion and file I/O using a bounded queue.
 USB read, short read, writer lag, or write errors make the capture fail;
 it does not report a successful sample-contiguous MPEG-TS recording.
-The JSON sidecar sets \`sample_continuity_verified: false\`.
+The JSON sidecar sets `sample_continuity_verified: false`.
 
 To recover from the access violation:
 
 1. Close the old OneSeg process, SDR++ and other RTL-SDR programs.
 2. Unplug DS-DT308SV and reconnect it after a short pause.
-3. \`git pull\` then \`uv sync\`.
-4. If \`ch20_async.c64.partial\` remains from the crashed run, inspect
+3. `git pull` then `uv sync`.
+4. If `ch20_async.c64.partial` remains from the crashed run, inspect
    the filename and delete **only that incomplete partial file**;
    preserve the last successfully recorded .c64 and its .json.
 5. With a newly named target, retry:
 
-\`\`\`powershell
+```powershell
 uv run oneseg-doctor
 uv run oneseg-capture --channel 20 --seconds 3 --gain 0 --ppm 0 --output ch20_safe.c64
 uv run oneseg-quality ch20_safe.c64
 uv run oneseg-lock ch20_safe.c64
 uv run oneseg-pilots ch20_safe.c64 --seconds 1.2 --json ch20_safe_pilots.json
-\`\`\`
+```
 
-If \`oneseg-doctor\` itself crashes after unplug/replug or the new
+If `oneseg-doctor` itself crashes after unplug/replug or the new
 sync-reader path still reports native access violations, do not
-repeat the capture test: record the \`pyrtlsdr\` / bundled
-\`librtlsdr\` versions, USB hardware ID and whether standalone
+repeat the capture test: record the `pyrtlsdr` / bundled
+`librtlsdr` versions, USB hardware ID and whether standalone
 SDR++ still works; the native driver/DLL combination needs review.
