@@ -22,7 +22,7 @@ There is no USB device available in CI: reception and Windows sound-device behav
 - **SDR mode:** spectrum, manual frequency tuning, optional wide-FM mono audio (a sound output device is required).
 - **1seg research mode:** physical channels 13–52, RF frequency calculation, spectrum, and I/Q recording. It does **not** decode television yet.
 - **Record:** choose a `.c64` file (little-endian complex64 I/Q). A `.json` sidecar records center frequency, sample rate, gain and PPM. Retuning stops the current recording to avoid mixing frequencies.
-- **Offline diagnostics:** `uv run oneseg-inspect path/to/capture.c64` prints *candidate* cyclic-prefix correlation peaks; these are not proof of a valid ISDB-T lock.
+- **Offline diagnostics:** `uv run oneseg-inspect path/to/capture.c64` prints *candidate* cyclic-prefix correlation peaks. Shorter guard windows overlap longer ones, and noise may produce false peaks; these are not proof of a valid ISDB-T lock.
 
 ## Development
 

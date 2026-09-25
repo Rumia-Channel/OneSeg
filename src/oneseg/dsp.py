@@ -46,7 +46,9 @@ def cyclic_prefix_candidates(iq: np.ndarray, limit: int = 80_000) -> list[dict]:
     """Rank CP-correlations across 1seg modes/guards; high score is NOT a decoder lock.
 
     Input must already be a filtered/aligned one-segment complex stream at ONESEG_RATE.
-    Scores may arise from interference or noise; TMCC and FEC are still required.
+    Shorter CP windows are nested within longer true prefixes; this metric
+    alone cannot uniquely identify the guard interval. Interference/noise may
+    also create peaks; TMCC and FEC are still required.
     """
     iq = np.asarray(iq, dtype=np.complex64)[:limit]
     if len(iq) < 2048:
