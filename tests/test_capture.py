@@ -17,18 +17,16 @@ class FakeSdr:
         self.freq_correction = 0
         self.cancelled = False
 
-    def read_samples_async(self, callback, num_samples):
-        assert num_samples == READ_SAMPLES
-        for _ in range(100):
-            if self.cancelled:
-                break
-            self.calls += 1
-            callback(np.full(
-                num_samples, self.calls / 10 + 1j, dtype=np.complex64
-            ), self)
+    def read_bytes(self, count):
+        assert count == 2 * READ_SAMPLES
+        self.calls += 1
+        return bytes((100 + self.calls, 255)) * READ_SAMPLES
+
+    def read_samples_async(self, *args, **kwargs):
+        raise AssertionError("native async should never be used")
 
     def cancel_read_async(self):
-        self.cancelled = True
+        raise AssertionError("native async cancellation must not be used")
 
     def close(self):
         self.closed = True
@@ -48,8 +46,8 @@ def test_exact_capture_and_metadata_with_zero_ppm(tmp_path):
     assert fake.calls == 1 + 4  # one warm-up plus four data reads
     assert fake.closed
     assert fake.freq_correction == 0
-    assert np.allclose(actual[:10], np.complex64(0.2 + 1j))
-    assert np.allclose(actual[-10:], np.complex64(0.5 + 1j))
+    assert np.allclose(actual[:10], np.complex64((102 / 127.5 - 1) + 1j))
+    assert np.allclose(actual[-10:], np.complex64((105 / 127.5 - 1) + 1j))
     assert info["center_frequency_hz"] == 557_142_857
     assert info["decoding_status"] == "RAW_IQ_NOT_TS"
     assert json.loads(output.with_suffix(".c64.json").read_text())["samples"] == len(actual)
@@ -67,13 +65,11 @@ def test_refuses_to_overwrite_and_bad_channel(tmp_path):
 
 def test_device_closed_and_no_partial_output_after_failed_read(tmp_path):
     class BrokenSdr(FakeSdr):
-        def read_samples_async(self, callback, num_samples):
+        def read_bytes(self, count):
             self.calls += 1
-            callback(np.full(
-                num_samples, self.calls / 10 + 1j, dtype=np.complex64
-            ), self)
-            self.calls += 1
-            callback(np.empty(0, dtype=np.complex64), self)
+            if self.calls == 2:
+                return bytes(10)
+            return bytes((100 + self.calls, 255)) * READ_SAMPLES
 
     fake = BrokenSdr()
     target = tmp_path / "incomplete.c64"
