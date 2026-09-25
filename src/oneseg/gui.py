@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from .channels import physical_channel_hz
 from .receiver import Receiver
 from .player import TransportPlayer
+from .diagnostics import explain_receiver_error
 
 
 class MainWindow(QMainWindow):
@@ -283,7 +284,7 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(
             self,
             "Receiver error",
-            details + "\n\nCheck WinUSB, the DS-DT308SV USB connection, and whether SDR++ is open.",
+            explain_receiver_error(Exception(details)) if "LIBUSB_ERROR_NOT_SUPPORTED" in details else details + "\n\nCheck WinUSB, the DS-DT308SV USB connection, and whether SDR++ is open.",
         )
 
     def closeEvent(self, event):

@@ -51,3 +51,14 @@ Reference only: [git-artes/gr-isdbt](https://github.com/git-artes/gr-isdbt) (GPL
 - Only one process can open the RTL-SDR at a time; close this app before opening SDR++.
 - The frequency dropdown is a **physical RF channel**, not an EPG/program list.
 - No warranty of successful RF reception, 1seg decoding, or FM audio playback on any particular Windows/USB configuration.
+
+## Windows USB error `LIBUSB_ERROR_NOT_SUPPORTED (-12)`
+
+If the GUI reports `Could not open SDR (device index = 0)`, the error occurs at USB device opening, *before* ISDB-T or RF processing. This is not a uv dependency resolution error. A compatible RTL-SDR was detected, but the USB backend cannot open it.
+
+1. Close this app and all other SDR/TV apps, unplug/replug DS-DT308SV, and try a USB 2.0 port if available.
+2. Check **Device Manager → Details → Hardware IDs** for the exact DS-DT308SV USB VID/PID, or open Zadig's Options → List All Devices and identify it by its disappearance when unplugged. Many RTL2832U dongles show `0BDA:2838`, **but verify the actual device, do not assume this ID for every dongle**.
+3. In Zadig, select the correct RTL2832U / `Bulk-In, Interface (Interface 0)` entry, **not Interface 1** and not another computer peripheral. Set target driver to WinUSB and install/replace only that interface's driver after checking the ID. If it is already WinUSB, inspect the other interface/parent entries and USB port before blindly reinstalling.
+4. Run `uv run oneseg-doctor`. It enumerates compatible devices and attempts a read-only open/close test. If another SDR app can open the tuner but this cannot, collect its driver and DLL versions before changing drivers.
+
+Reference: [RTL-SDR guide to usb_open_error -12](https://www.rtl-sdr.com/signalseverywhere-windows-10-usb_open_error-12-fix/) and [libusb Windows drivers](https://github.com/libusb/libusb/wiki/Windows). Changing the driver to WinUSB generally prevents the original vendor tuner app from using the same interface until its driver is restored.
