@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import csv
 from datetime import datetime
 from pathlib import Path
 
@@ -12,6 +13,10 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QHeaderView,
+    QTableWidget,
+    QTableWidgetItem,
+    QAbstractItemView,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -40,6 +45,8 @@ class MainWindow(QMainWindow):
         self.resize(1050, 720)
         self.worker: Receiver | None = None
         self.player: TransportPlayer | None = None
+        self.scanning = False
+        self.scan_rows = []
         self.settings = QSettings("Rumia-Channel", "OneSeg")
 
         shell = QWidget()
@@ -109,6 +116,44 @@ class MainWindow(QMainWindow):
         self.trace = self.plot.plot(pen=pg.mkPen("#57c8ed", width=1.5))
         layout.addWidget(self.plot, 1)
 
+        scan_header = QHBoxLayout()
+        self.scan_button = QPushButton("Scan UHF 13–52 (RF)")
+        self.scan_button.setEnabled(False)
+        self.scan_button.setToolTip(
+            "Use 1seg mode and fixed manual RF gain; candidates are NOT decoded TV stations."
+        )
+        self.scan_tune_button = QPushButton("Tune selected")
+        self.scan_tune_button.setEnabled(False)
+        self.scan_export_button = QPushButton("Export scan CSV…")
+        self.scan_export_button.setEnabled(False)
+        scan_header.addWidget(self.scan_button)
+        scan_header.addWidget(self.scan_tune_button)
+        scan_header.addWidget(self.scan_export_button)
+        layout.addLayout(scan_header)
+        self.scan_note = QLabel(
+            "RF power scan only: this does not identify TV stations or validate ISDB-T lock. "
+            "Set manual RF gain before starting."
+        )
+        self.scan_note.setWordWrap(True)
+        layout.addWidget(self.scan_note)
+        self.scan_table = QTableWidget(0, 6)
+        self.scan_table.setHorizontalHeaderLabels([
+            "Physical ch", "MHz", "Power dBFS", "Above median dB",
+            "Full-scale %", "RF assessment",
+        ])
+        self.scan_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.scan_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.scan_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.scan_table.verticalHeader().setVisible(False)
+        self.scan_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.scan_table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.ResizeMode.Stretch
+        )
+        self.scan_table.setMinimumHeight(135)
+        layout.addWidget(self.scan_table, 1)
+
         self.video = QLabel("Open an already decoded .ts file to play video/audio")
         self.video.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video.setMinimumHeight(140)
@@ -148,7 +193,12 @@ class MainWindow(QMainWindow):
         self.record_btn.clicked.connect(self._record)
         self.short_capture_btn.clicked.connect(self._capture_short)
         self.play_ts_btn.clicked.connect(self._play_ts)
+        self.scan_button.clicked.connect(self._scan_clicked)
+        self.scan_tune_button.clicked.connect(self._tune_scan_selection)
+        self.scan_export_button.clicked.connect(self._export_scan)
+        self.scan_table.itemSelectionChanged.connect(self._scan_selection_changed)
         self._mode_changed()
+        self._update_scan_button()
 
     def _mode_changed(self, *args):
         research = self.mode.currentData() == "oneseg"
@@ -162,6 +212,7 @@ class MainWindow(QMainWindow):
             self.notice.hide()
         if self.worker:
             self.worker.request("mode", self.mode.currentData())
+        self._update_scan_button()
 
     def _channel_changed(self, *args):
         mhz = physical_channel_hz(self.channel.value()) / 1e6
@@ -175,6 +226,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("ppm", self.ppm.value())
         if self.worker:
             self.worker.request("settings", self.ppm.value(), self._gain())
+        self._update_scan_button()
 
     def _gain(self):
         return "auto" if self.auto_gain.isChecked() else self.gain.value()
@@ -197,6 +249,9 @@ class MainWindow(QMainWindow):
         self.worker.message.connect(self.status.setText)
         self.worker.failed.connect(self._error)
         self.worker.recording.connect(self._recording)
+        self.worker.scan_started.connect(self._scan_started)
+        self.worker.scan_measurement.connect(self._scan_measurement)
+        self.worker.scan_complete.connect(self._scan_complete)
         self.worker.finished.connect(self._finished)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -206,6 +261,7 @@ class MainWindow(QMainWindow):
     def _ready(self):
         self.record_btn.setEnabled(True)
         self.short_capture_btn.setEnabled(True)
+        self._update_scan_button()
         if self.wfm.isChecked() and self.worker:
             self.worker.request("audio", True)
 
@@ -293,6 +349,7 @@ class MainWindow(QMainWindow):
         self.record_btn.setProperty("active", recording)
         self.record_btn.setText("Stop recording" if recording else "Record I/Q…")
         self.short_capture_btn.setEnabled(not recording and self.worker is not None)
+        self._update_scan_button()
 
     def _stop(self):
         if self.worker:
@@ -302,12 +359,15 @@ class MainWindow(QMainWindow):
 
     def _finished(self):
         self.worker = None
+        self.scanning = False
+        self._scan_controls(False)
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.record_btn.setEnabled(False)
         self.short_capture_btn.setEnabled(False)
         self._recording(False)
         self.status.setText("Stopped")
+        self._update_scan_button()
 
     def _error(self, details):
         self.status.setText(details)
