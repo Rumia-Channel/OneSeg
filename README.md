@@ -135,3 +135,13 @@ stream, program list or audio/video is produced. At 2.048 MS/s it can
 measure the middle part of each 6 MHz channel, not the entire 13-seg signal
 at once. The threshold is relative and can fail if the median is
 contaminated, all channels have similar energy, or local signals are weak.
+
+## 20ch: repeated OFDM cyclic-prefix evidence (2026-09-25)
+
+The actual uploaded 3-second recording at 515,142,857 Hz (20ch), fixed 0.0 dB RF gain and 0 ppm contained 6,144,000 complex64 samples, RMS ~0.2612, and 0% I/Q full-scale hits. Repeating OFDM cyclic-prefix correlations across five spaced 250ms windows strongly favored **mode 3, guard interval 1/8**, with correlations approximately 0.946, 0.983, 0.940, 0.705 and 0.982; fractional frequency offsets were about -305 to -293 Hz. This is a significant improvement over the earlier 27ch capture. Repeated CP is not a TMCC or service lock, and cannot on its own produce playable TS.
+
+To independently reproduce these intermediate measurements (the tuner does not need to be connected):
+
+    uv run oneseg-lock oneseg_ch20_20260925_161517.c64 --json ch20_lock.json
+
+Keep the matching .c64.json alongside the recording. The next unverified step is **pilot-aided equalization and TMCC/frame synchronization** of the central one-segment carriers, followed by byte/bit deinterleaving, FEC and a real MPEG-TS output. Do not claim real television playback from this CP result.
