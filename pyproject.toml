@@ -17,6 +17,7 @@ dependencies = [
 [project.scripts]
 oneseg = "oneseg.__main__:main"
 oneseg-inspect = "oneseg.inspect:main"
+oneseg-ofdm = "oneseg.ofdm:main"
 
 [build-system]
 requires = ["hatchling"]
