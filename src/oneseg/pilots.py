@@ -20,6 +20,7 @@ from scipy.signal import butter, resample_poly, sosfilt
 
 from .dsp import DEFAULT_SAMPLE_RATE, ONESEG_RATE
 from .ofdm import extract_ofdm_symbols, find_symbol_lock
+from .tmcc import verify_frames_from_soft
 
 MODE = 3
 ACTIVE = 433
@@ -232,8 +233,9 @@ def analyze_capture(path: Path, *, seconds: float = 1.2) -> dict:
         **asdict(alignment),
         "integer_offset_hz": alignment.integer_offset_hz,
         "combined_offset_hz": alignment.integer_offset_hz + lock.coarse_cfo_hz,
-        "signal_stage": "pilot carrier alignment + experimental DBPSK TMCC sync only",
+        "signal_stage": "pilot carrier alignment + DBPSK TMCC sync and cyclic parity verification; no TS",
         **candidate_tmcc_sync(soft),
+        **verify_frames_from_soft(soft),
     }
     return result
 
@@ -260,8 +262,9 @@ def main() -> int:
     )
     print(
         f"TMCC sync candidates: {report['single_sync_candidates']} singles, "
-        f"{len(report['repeated_sync_candidates'])} repeated. "
-        "BCH NOT VERIFIED. MPEG-TS NOT RECOVERED."
+        f"{len(report['repeated_sync_candidates'])} repeated; "
+        f"{len(report['bch_parity_verified_frames'])} cyclic-parity-verified frames. "
+        "Bit-error correction NOT IMPLEMENTED; MPEG-TS NOT RECOVERED."
     )
     if args.json:
         args.json.write_text(
