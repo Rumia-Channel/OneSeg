@@ -289,7 +289,7 @@ from sync candidates alone.
 The uploaded I/Q recordings with similar names are **different acquisitions**:
 
 - First capture, UTC 2026-09-25 12:16:14, \`ch20_safe.c64\`:
-  3,000,000-ish? No: exactly **6,144,000** complex samples,
+  exactly **6,144,000** complex samples,
   3 full-scale component hits, approximate complex RMS 0.263,
   pilot offset +12 bins and fractional CFO around +113 Hz.
 - Second capture, UTC 2026-09-25 12:35:07, uploaded as
