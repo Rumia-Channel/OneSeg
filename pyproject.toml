@@ -25,6 +25,7 @@ oneseg-capture = "oneseg.capture:main"
 oneseg-quality = "oneseg.quality:main"
 oneseg-lock = "oneseg.lock_probe:main"
 oneseg-pilots = "oneseg.pilots:main"
+oneseg-deinterleave = "oneseg.deinterleave:main"
 
 [build-system]
 requires = ["hatchling"]
