@@ -20,8 +20,8 @@ DRIVER_HELP = (
 )
 
 
-def explain_receiver_error(exception: BaseException) -> str:
-    message = f"{type(exception).__name__}: {exception}"
+def explain_receiver_error(exception: BaseException | str) -> str:
+    message = exception if isinstance(exception, str) else f"{type(exception).__name__}: {exception}"
     if getattr(exception, "errno", None) == -12 or (
         "LIBUSB_ERROR_NOT_SUPPORTED" in message or "libusb_open error -12" in message
     ):
@@ -38,7 +38,7 @@ def explain_receiver_error(exception: BaseException) -> str:
 
 
 def probe() -> int:
-    """Read-only probe. Returns a useful shell exit status; no Zadig automation."""
+    """USB open/close probe. Returns a useful shell exit status; no driver changes."""
     try:
         from rtlsdr import RtlSdr
         from rtlsdr.librtlsdr import librtlsdr
@@ -72,7 +72,7 @@ def main() -> int:
     import argparse
 
     argparse.ArgumentParser(
-        description="Read-only RTL-SDR USB driver and device-open diagnostic"
+        description="RTL-SDR USB driver and device-open diagnostic (does not change drivers)"
     ).parse_args()
     return probe()
 

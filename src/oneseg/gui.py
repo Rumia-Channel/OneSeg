@@ -284,7 +284,7 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(
             self,
             "Receiver error",
-            explain_receiver_error(Exception(details)) if "LIBUSB_ERROR_NOT_SUPPORTED" in details else details + "\n\nCheck WinUSB, the DS-DT308SV USB connection, and whether SDR++ is open.",
+            explain_receiver_error(details),
         )
 
     def closeEvent(self, event):
