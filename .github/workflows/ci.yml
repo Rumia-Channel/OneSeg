@@ -1,0 +1,26 @@
+name: Test OneSeg prototype
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Resolve project and test dependencies
+        run: uv sync
+      - name: Unit tests (no USB hardware required)
+        run: uv run pytest -q
+      - name: GUI import smoke test (Windows)
+        if: runner.os == 'Windows'
+        run: uv run python -c "import oneseg.gui; print('GUI imports OK')"
