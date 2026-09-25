@@ -21,6 +21,8 @@ from scipy.signal import butter, resample_poly, sosfilt
 from .dsp import DEFAULT_SAMPLE_RATE, ONESEG_RATE
 from .ofdm import extract_ofdm_symbols, find_symbol_lock
 from .tmcc import verify_frames_from_soft
+from .quality import block_quality
+from .layer_a import extract_layer_a_carriers, save_layer_a_fixture
 
 MODE = 3
 ACTIVE = 433
@@ -190,7 +192,10 @@ def candidate_tmcc_sync(soft: np.ndarray, *, max_errors: int = 2) -> dict:
     }
 
 
-def analyze_capture(path: Path, *, seconds: float = 1.2) -> dict:
+def analyze_capture(
+    path: Path, *, seconds: float = 1.2,
+    layer_a_output: Path | None = None,
+) -> dict:
     """Process capture off line, finding pilot positions before attempting TMCC."""
     if not 0.5 <= seconds <= 3.0:
         raise ValueError("seconds must be 0.5..3.0")
@@ -206,6 +211,7 @@ def analyze_capture(path: Path, *, seconds: float = 1.2) -> dict:
     samples = np.fromfile(path, dtype="<c8", count=int(seconds * DEFAULT_SAMPLE_RATE))
     if len(samples) < int(0.5 * DEFAULT_SAMPLE_RATE):
         raise ValueError("not enough captured I/Q")
+    fullscale_count, measured_count, _ = block_quality(samples)
     raw = samples.astype(np.complex128)
     raw -= raw.mean()
     lowpass = butter(8, 205_000, fs=DEFAULT_SAMPLE_RATE, output="sos")
@@ -230,6 +236,8 @@ def analyze_capture(path: Path, *, seconds: float = 1.2) -> dict:
         "cp_quality": lock.cp_quality,
         "fractional_cfo_hz": lock.coarse_cfo_hz,
         "fft_symbols": len(fft),
+        "iq_fullscale_percent": 100 * fullscale_count / measured_count,
+        "iq_overload_warning": fullscale_count / measured_count > 0.05,
         **asdict(alignment),
         "integer_offset_hz": alignment.integer_offset_hz,
         "combined_offset_hz": alignment.integer_offset_hz + lock.coarse_cfo_hz,
@@ -237,6 +245,16 @@ def analyze_capture(path: Path, *, seconds: float = 1.2) -> dict:
         **candidate_tmcc_sync(soft),
         **verify_frames_from_soft(soft),
     }
+    if layer_a_output is not None:
+        payload = extract_layer_a_carriers(
+            equalized, pilot_phase=alignment.symbol_phase
+        )
+        result["layer_a_fixture"] = save_layer_a_fixture(
+            layer_a_output, payload=payload,
+            pilot_phase=alignment.symbol_phase,
+            tmcc_frames=result["bch_parity_verified_frames"],
+            integer_offset_bins=alignment.integer_offset_bins,
+        )
     return result
 
 
@@ -245,9 +263,16 @@ def main() -> int:
     parser.add_argument("capture", type=Path)
     parser.add_argument("--seconds", type=float, default=1.2)
     parser.add_argument("--json", type=Path, help="optional output report JSON")
+    parser.add_argument(
+        "--layer-a-output", type=Path,
+        help="write unmapped central 384 complex carriers to a new .npz (NOT TS)",
+    )
     args = parser.parse_args()
     try:
-        report = analyze_capture(args.capture, seconds=args.seconds)
+        report = analyze_capture(
+            args.capture, seconds=args.seconds,
+            layer_a_output=args.layer_a_output,
+        )
     except (ValueError, OSError, KeyError, json.JSONDecodeError) as exc:
         parser.exit(2, f"Pilot/TMCC diagnostic failed: {exc}\n")
     print(
@@ -261,11 +286,24 @@ def main() -> int:
         f"coherence {report['pilot_coherence']:.3f}"
     )
     print(
+        f"I/Q full-scale: {report['iq_fullscale_percent']:.2f}%"
+        + (
+            " — WARNING: gain overload may corrupt QPSK data!"
+            if report["iq_overload_warning"] else ""
+        )
+    )
+    print(
         f"TMCC sync candidates: {report['single_sync_candidates']} singles, "
         f"{len(report['repeated_sync_candidates'])} repeated; "
         f"{len(report['bch_parity_verified_frames'])} cyclic-parity-verified frames. "
         "Bit-error correction NOT IMPLEMENTED; MPEG-TS NOT RECOVERED."
     )
+    if report.get("layer_a_fixture"):
+        print(
+            "Unmapped QPSK Layer A carriers: "
+            f"{report['layer_a_fixture']['file']} "
+            "(NOT frequency/time-deinterleaved, NOT TS)"
+        )
     if args.json:
         args.json.write_text(
             json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
