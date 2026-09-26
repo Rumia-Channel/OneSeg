@@ -103,7 +103,9 @@ class MainWindow(QMainWindow):
 
         self.channel = QSpinBox()
         self.channel.setRange(13, 52)
-        self.channel.setValue(27)
+        self.channel.setValue(
+            max(13, min(52, int(self.settings.value("physical_channel", 20))))
+        )
         form.addRow("Physical RF channel", self.channel)
 
         self.frequency = QDoubleSpinBox()
@@ -266,6 +268,7 @@ class MainWindow(QMainWindow):
         self._update_live_button()
 
     def _channel_changed(self, *args):
+        self.settings.setValue("physical_channel", self.channel.value())
         mhz = physical_channel_hz(self.channel.value()) / 1e6
         self.frequency.setValue(mhz)
 
@@ -739,6 +742,7 @@ class MainWindow(QMainWindow):
             )
             return
         self.decoder = OfflineDecodeWorker(source, output)
+        self.start_btn.setEnabled(False)
         self.decoder.progress.connect(self.status.setText)
         self.decoder.succeeded.connect(self._decoded_iq)
         self.decoder.failed.connect(self._offline_decode_failed)
@@ -773,6 +777,7 @@ class MainWindow(QMainWindow):
     def _offline_decode_finished(self):
         self.decoder = None
         self.decode_iq_btn.setEnabled(True)
+        self.start_btn.setEnabled(self.worker is None and self.live is None)
         self._update_live_button()
 
     def _play_ts(self):
