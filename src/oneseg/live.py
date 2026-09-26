@@ -253,6 +253,7 @@ class ExperimentalLiveReceiver(QThread):
                 capture = root / f"window_{ordinal:06d}.u8iq"
                 ordinal += 1
                 try:
+                    capture_started = perf_counter()
                     record_raw_window(
                         device, capture,
                         samples_required=round(
@@ -260,6 +261,9 @@ class ExperimentalLiveReceiver(QThread):
                         ),
                         warmup_buffers=1 if ordinal == 1 else 0,
                         cancelled=self.stop_event.is_set,
+                    )
+                    capture_timings[capture] = round(
+                        perf_counter() - capture_started, 2
                     )
                 except CaptureCancelled:
                     break
@@ -272,6 +276,7 @@ class ExperimentalLiveReceiver(QThread):
                     capture_queue.put_nowait(capture)
                 except Full:
                     missing += 1
+                    capture_timings.pop(capture, None)
                     capture.unlink(missing_ok=True)
                     capture.with_name(
                         capture.name + ".partial"
@@ -306,6 +311,7 @@ class ExperimentalLiveReceiver(QThread):
                     except Empty:
                         continue
                     if dropped is not None:
+                        capture_timings.pop(dropped, None)
                         dropped.unlink(missing_ok=True)
                         dropped.with_name(
                             dropped.name + ".partial"
