@@ -84,16 +84,24 @@ def test_live_thread_pipeline_with_fake_usb_and_real_decoding_boundary(
 
     fake = Device()
 
-    def fake_record(device, path, *, samples_required, metadata, cancelled):
+    def fake_raw(device, path, *, samples_required, warmup_buffers, cancelled):
         assert device is fake
         assert samples_required == 2048000
+        assert path.suffix == ".u8iq"
+        assert warmup_buffers == (1 if capture_count[0] == 0 else 0)
         capture_count[0] += 1
         if capture_count[0] > 1:
             assert decoded.wait(timeout=3)
             raise CaptureCancelled("test ended after one window")
-        path.write_bytes(b"\0" * 8)
-        path.with_suffix(".c64.json").write_text("{}")
+        path.write_bytes(b"\0\xff" * 4)
         created.append(path)
+
+    def fake_expand(source, dest, *, metadata):
+        assert source.suffix == ".u8iq"
+        assert source.is_file()
+        assert dest.suffix == ".c64"
+        dest.write_bytes(b"\0" * 8)
+        dest.with_suffix(".c64.json").write_text("{}")
 
     def fake_decode(source, target, *, seconds, max_ofdm_symbols):
         assert source.is_file()
@@ -106,10 +114,12 @@ def test_live_thread_pipeline_with_fake_usb_and_real_decoding_boundary(
             "rs_and_ts_accepted_packets": 1,
             "rejected_rs_or_invalid_ts_packets": 0,
             "pat_programs": {},
+            "pmt_elementary_streams": {},
             "input_overload_warning": False,
         }
 
-    monkeypatch.setattr("oneseg.live.record_stream", fake_record)
+    monkeypatch.setattr("oneseg.live.record_raw_window", fake_raw)
+    monkeypatch.setattr("oneseg.live.expand_raw_to_c64", fake_expand)
     worker = ExperimentalLiveReceiver(
         frequency_hz=515142857,
         ppm=0,
@@ -124,4 +134,5 @@ def test_live_thread_pipeline_with_fake_usb_and_real_decoding_boundary(
     assert fake.center_freq == 515142857
     assert fake.gain == -3.0
     assert capture_count[0] == 2
-    assert not created[0].exists()  # temp I/Q deleted only after decode join
+    assert not created[0].exists()  # temp raw bytes deleted after decode join
+    assert not created[0].with_suffix(".c64").exists()
