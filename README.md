@@ -2,7 +2,7 @@
 
 Windows 11 / Python 3.12 / **uv only**. No Conda, GNU Radio, WSL or administrator privileges at runtime.
 
-> **Status (prototype):** Windows SDR reception, mono FM, I/Q capture, offline one-seg OFDM/FFT analysis, Viterbi and RS FEC modules, post-inner-FEC MPEG-TS output, and in-app playback of **already decoded** MPEG-TS. **An offline, partial DS-DT308SV I/Q → real RS-validated one-seg MPEG-TS pipeline now exists; the live tuner → continuous TS → playable TV pipeline does NOT.** Do not confuse an RF-tuned physical channel or a TS player with live television reception.
+> **Status (experimental):** Windows SDR reception, mono FM, I/Q capture, verified 20ch TMCC, and offline RS-validated partial one-seg MPEG-TS recovery are implemented. **The GUI now has an experimental RF → TS → PyAV live path**, but it decodes 3-second windows independently, can lose samples/transport packets, and has not been verified playing continuous TV on the actual DS-DT308SV. It is NOT yet a confirmed, gapless real-time television receiver.
 
 ## Installation (PowerShell)
 
@@ -507,3 +507,73 @@ fragment nor the new offline GUI action should be labeled
 a successful television picture or working real-time
 one-seg playback. The current priority is longer,
 unclipped payload FEC and reliable PAT/PMT/PES continuity.
+
+
+## Experimental live one-seg in `uv run oneseg` (2026-09-26)
+
+**New but not yet verified as continuous television:** the Windows GUI
+now exposes `Watch 1seg LIVE (experimental)`. It uses the same
+crash-avoiding synchronous USB I/Q acquisition as `oneseg-capture`,
+a separate I/Q writer thread, a separate offline-window decoder thread,
+Numba-compiled 64-state Viterbi (releases the GIL), real shortened
+RS(204,188) validation and an in-memory blocking MPEG-TS input for
+the existing PyAV video/audio player. It **does not** invoke the
+native `read_samples_async` / `cancel_read_async` code that crashed
+on the FC0013 dongle.
+
+On the Windows 11 PC with the USB tuner and UHF antenna:
+
+```powershell
+git pull
+uv sync
+uv run oneseg
+```
+
+Select `1seg RF / experimental LIVE decode`; choose physical 20ch
+(the validated local ISDB-T channel), uncheck `Automatic` RF gain,
+and set manual gain near **0 dB** to start. If the LIVE
+`ADC OVERLOADED` warning appears, reduce gain one supported tuner
+step and retry. The earlier two 0-dB recordings had very different
+I/Q clipping rates (near zero versus 11.32%), so no single
+guaranteed-good gain exists for all antenna conditions.
+
+**Do not click `Start receiver` first.** The experimental live
+button opens and owns the RTL tuner itself; close SDR++, other tuner
+apps and any earlier OneSeg receiver session. Click
+`Watch 1seg LIVE (experimental)`. Wait 10–20 seconds for
+the first 3-second I/Q window and one-time Numba JIT compilation.
+The status and dedicated LIVE metrics label show genuine
+RS-validated TS packets, rejected 204-byte blocks,
+whether PAT was present in the latest chunk, ADC overload,
+number of failed windows and actual rendered video frames.
+Use `Stop` or the live button to release the tuner.
+
+The transport player receives RS-validated packets through
+a bounded, non-seekable TS queue. A missing PAT/PMT or broken
+PES can cause PyAV probing to fail; this is reported as a
+failed live playback trial, not fabricated video. The app
+does not silently invent missing packets or blank video.
+A successful tuner open or TS packet count by itself
+**does not certify functioning audiovisual reception**.
+
+**Known gap:** this first live prototype independently decodes
+3-second RF windows, reinitializes the Mode-3 / I=4 time
+deinterleaver for each, discards its initial 380 OFDM rows,
+and does not yet preserve exact byte/PRBS/codec continuity
+across windows. If decoding takes longer than acquisition,
+the bounded two-window queue explicitly reports dropped
+whole windows rather than stalling USB indefinitely. It is
+therefore a live I/Q-to-TS *experiment*, not a gapless
+service-locked receiver. A persistent streaming receiver
+must carry OFDM timing, interleaver state, Viterbi traceback,
+byte-deinterleaver/energy PRBS state and TS packet/PES
+continuity between windows before reliable viewing can be
+claimed. CI has no real tuner, UHF antenna or Windows audio
+device; the live button needs the next FC0013 hardware test.
+
+**How to report results:** after 15–30 seconds, capture
+the LIVE metrics label and any PyAV/USB error and report
+whether an actual video frame or audio was produced. If
+packet count remains 0 or PAT is always absent, stop LIVE,
+then capture a fresh short 20ch `.c64` and matching metadata
+using the established safe CLI path, with the same gain.
