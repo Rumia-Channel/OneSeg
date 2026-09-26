@@ -162,16 +162,17 @@ class ExperimentalLiveReceiver(QThread):
                             data = target.read_bytes()
                             if len(data) != 188 * result["rs_and_ts_accepted_packets"]:
                                 raise IOError("recovered TS byte count mismatch")
-                            self.transport.emit(data)
                             decoded += result["rs_and_ts_accepted_packets"]
                             self.progress.emit({
                                 "accepted_total": decoded,
                                 "accepted_chunk": result["rs_and_ts_accepted_packets"],
                                 "rejected_chunk": result["rejected_rs_or_invalid_ts_packets"],
                                 "has_pat": bool(result["pat_programs"]),
+                                "has_pmt": bool(result["pmt_elementary_streams"]),
                                 "overloaded": bool(result["input_overload_warning"]),
                                 "windows_failed": missing,
                             })
+                            self.transport.emit(data)
                             self.status.emit(
                                 f"LIVE EXPERIMENT: {decoded} genuine TS packets; "
                                 f"latest +{result['rs_and_ts_accepted_packets']}, "
