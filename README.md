@@ -2,7 +2,7 @@
 
 Windows 11 / Python 3.12 / **uv only**. No Conda, GNU Radio, WSL or administrator privileges at runtime.
 
-> **Status (prototype):** Windows SDR reception, mono FM, I/Q capture, offline one-seg OFDM/FFT analysis, Viterbi and RS FEC modules, post-inner-FEC MPEG-TS output, and in-app playback of **already decoded** MPEG-TS. **There is still NO working, integrated DS-DT308SV I/Q → one-seg TS decoder.** Do not confuse an RF-tuned physical channel or a TS player with live television reception.
+> **Status (prototype):** Windows SDR reception, mono FM, I/Q capture, offline one-seg OFDM/FFT analysis, Viterbi and RS FEC modules, post-inner-FEC MPEG-TS output, and in-app playback of **already decoded** MPEG-TS. **An offline, partial DS-DT308SV I/Q → real RS-validated one-seg MPEG-TS pipeline now exists; the live tuner → continuous TS → playable TV pipeline does NOT.** Do not confuse an RF-tuned physical channel or a TS player with live television reception.
 
 ## Installation (PowerShell)
 
@@ -459,3 +459,51 @@ decodability, but first use the already captured clean
 → \`oneseg-deinterleave\` → \`oneseg-recover\`.
 Do not imply video will render from this partial TS
 or that a streaming I/Q → TS GUI pipeline is integrated.
+
+
+## Single-command offline I/Q -> partial TS (Windows and Linux)
+
+The offline stages previously required manually running
+\`oneseg-pilots\` → \`oneseg-deinterleave\` →
+\`oneseg-recover\`. Use \`oneseg-decode\` instead for a
+**previously recorded .c64** with a matching adjacent
+\`.c64.json\`. It runs those same stages, requires at least
+one TMCC parity-verified frame, selects frame position and
+PRBS phase through actual sync/RS checks, and cleans its
+large temporary .npz intermediates automatically. It does
+not open the RTL-SDR tuner and never makes fake packets.
+
+\`\`\`powershell
+git pull
+uv sync
+uv run oneseg-decode ch20_safe.c64 --seconds 3 --max-ofdm-symbols 1020 --output ch20_direct_partial.ts
+uv run oneseg-ts inspect ch20_direct_partial.ts
+uv run oneseg
+\`\`\`
+
+Output files are \`ch20_direct_partial.ts\` and
+\`ch20_direct_partial.ts.json\`. The JSON includes
+the original capture path, clipping percentage, validated
+TMCC frame count, RS-confirmed packet count, rejected
+204-byte blocks, PID counts and PAT/PMT discovery.
+Existing TS/metadata will not be overwritten.
+
+In the GUI, close/stop the receiver first and choose
+**Decode saved IQ → partial TS…**; select the recorded
+\`.c64\`, then a *new* \`.ts\` output name. Decoding happens
+in a separate QThread and does not access USB. The GUI
+reports how many genuine RS-validated packets were saved
+and warns if PAT is absent. The **Play decoded TS…** action
+still opens a saved TS; decoding a partial file is
+NOT proof of a valid, continuously playable live video.
+
+An independent FFmpeg/ffprobe inspection of the *existing*
+203-packet partial test vector detected AAC-LC audio on
+PID 0x883 at 48 kHz stereo, but also numerous missing/
+corrupt PES warnings and could not infer the video codec
+from the fragment. An experimental decode recovered only
+~0.34 s of WAV with damaged regions; neither this
+fragment nor the new offline GUI action should be labeled
+a successful television picture or working real-time
+one-seg playback. The current priority is longer,
+unclipped payload FEC and reliable PAT/PMT/PES continuity.
