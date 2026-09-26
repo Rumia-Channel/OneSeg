@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import BinaryIO
 from threading import Event
 
 import av
@@ -20,13 +21,16 @@ class TransportPlayer(QThread):
     status = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path | BinaryIO):
         super().__init__()
-        self.path = Path(path)
+        self.path = Path(path) if isinstance(path, (str, Path)) else path
         self.stop_event = Event()
 
     def stop(self):
         self.stop_event.set()
+        if not isinstance(self.path, Path):
+            # Wake blocking FFmpeg reads of a non-seekable live TS buffer.
+            self.path.close()
 
     def run(self):
         # Delay audio device initialization until the TS actually contains audio.
@@ -38,7 +42,8 @@ class TransportPlayer(QThread):
         start_clock = time.monotonic()
         first_timestamp = None
         try:
-            container = av.open(str(self.path), format="mpegts")
+            source = str(self.path) if isinstance(self.path, Path) else self.path
+            container = av.open(source, format="mpegts")
             video_count = 0
             audio_count = 0
             self.status.emit(f"Reading MPEG-TS: {self.path.name}")
