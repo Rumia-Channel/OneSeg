@@ -37,6 +37,7 @@ from .receiver import Receiver
 from .player import TransportPlayer
 from .diagnostics import explain_receiver_error
 from .decode import decode_capture
+from .live import ExperimentalLiveReceiver, LiveTsBuffer
 
  
 class OfflineDecodeWorker(QThread):
@@ -69,6 +70,9 @@ class MainWindow(QMainWindow):
         self.worker: Receiver | None = None
         self.player: TransportPlayer | None = None
         self.decoder: OfflineDecodeWorker | None = None
+        self.live: ExperimentalLiveReceiver | None = None
+        self.live_stream: LiveTsBuffer | None = None
+        self.live_frames = 0
         self.scanning = False
         self.scan_rows = []
         self.settings = QSettings("Rumia-Channel", "OneSeg")
@@ -78,8 +82,9 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(shell)
 
         self.notice = QLabel(
-            "Live 1seg video is not integrated. Saved I/Q can now be decoded "
-            "offline to RS-verified partial MPEG-TS; playback is not guaranteed."
+            "EXPERIMENTAL live 1seg is available: 3-second decode windows have "
+            "gaps; stable video/audio is not yet verified. Offline RS-verified "
+            "partial TS is supported."
         )
         self.notice.setWordWrap(True)
         self.notice.setStyleSheet(
@@ -189,6 +194,12 @@ class MainWindow(QMainWindow):
         self.stop_btn = QPushButton("Stop")
         self.record_btn = QPushButton("Record I/Q…")
         self.play_ts_btn = QPushButton("Play decoded TS…")
+        self.live_btn = QPushButton("Watch 1seg LIVE (experimental)")
+        self.live_btn.setToolTip(
+            "Requires 1seg RF mode, fixed gain and stopped receiver. "
+            "Live decoder has window gaps; video is NOT guaranteed."
+        )
+        self.live_btn.setEnabled(False)
         self.decode_iq_btn = QPushButton("Decode saved IQ → partial TS…")
         self.decode_iq_btn.setToolTip(
             "Decode a previously recorded .c64 and its adjacent .c64.json "
@@ -202,6 +213,7 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.stop_btn)
         actions.addWidget(self.record_btn)
         actions.addWidget(self.short_capture_btn)
+        actions.addWidget(self.live_btn)
         actions.addWidget(self.decode_iq_btn)
         actions.addWidget(self.play_ts_btn)
         layout.addLayout(actions)
@@ -224,12 +236,14 @@ class MainWindow(QMainWindow):
         self.short_capture_btn.clicked.connect(self._capture_short)
         self.play_ts_btn.clicked.connect(self._play_ts)
         self.decode_iq_btn.clicked.connect(self._decode_saved_iq)
+        self.live_btn.clicked.connect(self._toggle_live)
         self.scan_button.clicked.connect(self._scan_clicked)
         self.scan_tune_button.clicked.connect(self._tune_scan_selection)
         self.scan_export_button.clicked.connect(self._export_scan)
         self.scan_table.itemSelectionChanged.connect(self._scan_selection_changed)
         self._mode_changed()
         self._update_scan_button()
+        self._update_live_button()
 
     def _mode_changed(self, *args):
         research = self.mode.currentData() == "oneseg"
@@ -244,6 +258,7 @@ class MainWindow(QMainWindow):
         if self.worker:
             self.worker.request("mode", self.mode.currentData())
         self._update_scan_button()
+        self._update_live_button()
 
     def _channel_changed(self, *args):
         mhz = physical_channel_hz(self.channel.value()) / 1e6
@@ -258,6 +273,7 @@ class MainWindow(QMainWindow):
         if self.worker:
             self.worker.request("settings", self.ppm.value(), self._gain())
         self._update_scan_button()
+        self._update_live_button()
 
     def _gain(self):
         return "auto" if self.auto_gain.isChecked() else self.gain.value()
@@ -267,7 +283,7 @@ class MainWindow(QMainWindow):
             self.worker.request("audio", enabled)
 
     def _start(self):
-        if self.worker is not None:
+        if self.worker is not None or self.live is not None:
             return
         self.worker = Receiver(
             frequency_hz=round(self.frequency.value() * 1e6),
@@ -286,6 +302,7 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self._finished)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self._update_live_button()
         self.status.setText("Opening RTL-SDR…")
         self.worker.start()
 
@@ -483,6 +500,136 @@ class MainWindow(QMainWindow):
             return
         self.status.setText(f"RF scan saved: {path.name}")
 
+    def _update_live_button(self):
+        if self.live is not None:
+            self.live_btn.setEnabled(True)
+            self.live_btn.setText("Stop experimental LIVE 1seg")
+            return
+        permitted = (
+            self.worker is None
+            and self.decoder is None
+            and self.player is None
+            and self.mode.currentData() == "oneseg"
+            and not self.auto_gain.isChecked()
+        )
+        self.live_btn.setEnabled(permitted)
+        self.live_btn.setText("Watch 1seg LIVE (experimental)")
+
+    def _toggle_live(self):
+        if self.live is not None:
+            self._stop_live()
+            return
+        if self.worker is not None or self.decoder is not None or self.player is not None:
+            QMessageBox.information(
+                self, "Stop other processing first",
+                "Stop the receiver, offline decoder and file TS player "
+                "before experimental live reception.",
+            )
+            return
+        if self.mode.currentData() != "oneseg" or self.auto_gain.isChecked():
+            QMessageBox.information(
+                self, "Fixed gain required",
+                "Select 1seg RF mode and disable Automatic gain. "
+                "The live experimental demodulator supports only "
+                "Mode-3 / GI 1/8 Layer A QPSK 2/3 at present.",
+            )
+            return
+        self.live_frames = 0
+        self.live_stream = LiveTsBuffer()
+        self.live = ExperimentalLiveReceiver(
+            frequency_hz=round(self.frequency.value() * 1e6),
+            ppm=self.ppm.value(),
+            gain=self.gain.value(),
+        )
+        self.live.transport.connect(self._live_transport)
+        self.live.progress.connect(self._live_progress)
+        self.live.status.connect(self.status.setText)
+        self.live.failed.connect(self._live_failed)
+        self.live.finished.connect(self._live_finished)
+        self.player = TransportPlayer(self.live_stream)
+        self.player.image_ready.connect(self._show_frame)
+        self.player.status.connect(self.status.setText)
+        self.player.failed.connect(self._live_player_failed)
+        self.player.finished.connect(self._player_finished)
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.play_ts_btn.setEnabled(False)
+        self.decode_iq_btn.setEnabled(False)
+        self._update_live_button()
+        self.video.setText(
+            "EXPERIMENTAL LIVE: waiting for genuine TS packets. "
+            "This is not yet verified gapless video."
+        )
+        self.player.start()
+        self.live.start()
+
+    def _live_transport(self, data):
+        if self.live_stream is None:
+            return
+        try:
+            self.live_stream.push(data)
+        except (BufferError, ValueError) as exc:
+            self.status.setText(f"Live TS consumer cannot keep up: {exc}")
+            self._stop_live()
+
+    def _live_progress(self, report):
+        if self.live_frames:
+            return  # Do not overwrite a real rendered video frame with text.
+        if report["overloaded"]:
+            self.video.setText(
+                f"Experimental live: {report['accepted_total']} RS-verified TS "
+                "packets, but I/Q ADC clipping >5%. Reduce RF gain. "
+                "Video playback not yet verified."
+            )
+        else:
+            self.video.setText(
+                f"Experimental live: {report['accepted_total']} RS-verified TS "
+                f"packets; PAT {'found' if report['has_pat'] else 'not yet found'}. "
+                "Window gaps may prevent video playback."
+            )
+
+    def _live_player_failed(self, message):
+        # TS may lack PAT/PMT or have broken PES. Keep RF reception running:
+        # this alone is not a native USB device failure.
+        self.status.setText(
+            f"Live video demux not established ({message}); RF decoding "
+            "continues until Stop. Partial TS is not continuous playback."
+        )
+        if self.live_stream is not None:
+            self.live_stream.close()
+
+    def _live_failed(self, message):
+        self.status.setText(message)
+        QMessageBox.warning(self, "Experimental live receiver error", message)
+        self._stop_live()
+
+    def _stop_live(self):
+        if self.live is None:
+            return
+        self.live_btn.setEnabled(False)
+        self.stop_btn.setEnabled(False)
+        self.status.setText("Stopping experimental live receiver and TS player…")
+        self.live.stop()
+        if self.live_stream is not None:
+            self.live_stream.close()
+        if self.player is not None:
+            self.player.stop()
+
+    def _live_finished(self):
+        self.live = None
+        if self.live_stream is not None:
+            self.live_stream.close()
+        self.live_stream = None
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.decode_iq_btn.setEnabled(True)
+        self.play_ts_btn.setEnabled(self.player is None)
+        self._update_live_button()
+        self.status.setText(
+            f"Live experiment stopped. Rendered {self.live_frames} "
+            "video frames; this does not imply gapless live TV."
+        )
+
     def _decode_saved_iq(self):
         if self.decoder is not None:
             return
@@ -559,6 +706,8 @@ class MainWindow(QMainWindow):
         self.decode_iq_btn.setEnabled(True)
 
     def _play_ts(self):
+        if self.live is not None:
+            return
         if self.player is not None:
             self.player.stop()
             self.play_ts_btn.setEnabled(False)
@@ -578,6 +727,8 @@ class MainWindow(QMainWindow):
         self.player.start()
 
     def _show_frame(self, image):
+        if self.live is not None:
+            self.live_frames += 1
         image_size = self.video.size()
         pixmap = QPixmap.fromImage(image)
         self.video.setPixmap(pixmap.scaled(
@@ -588,7 +739,7 @@ class MainWindow(QMainWindow):
 
     def _player_finished(self):
         self.player = None
-        self.play_ts_btn.setEnabled(True)
+        self.play_ts_btn.setEnabled(self.live is None)
         self.play_ts_btn.setText("Play decoded TS…")
 
     def _capture_short(self):
@@ -641,6 +792,9 @@ class MainWindow(QMainWindow):
         self._update_scan_button()
 
     def _stop(self):
+        if self.live is not None:
+            self._stop_live()
+            return
         if self.worker:
             self.stop_btn.setEnabled(False)
             self.worker.stop()
@@ -657,6 +811,7 @@ class MainWindow(QMainWindow):
         self._recording(False)
         self.status.setText("Stopped")
         self._update_scan_button()
+        self._update_live_button()
 
     def _error(self, details):
         self.status.setText(details)
@@ -667,6 +822,12 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
+        if self.live is not None and self.live.isRunning():
+            self._stop_live()
+            if not self.live.wait(3000):
+                self.status.setText("Waiting for experimental live decoder to stop…")
+                event.ignore()
+                return
         if self.decoder is not None and self.decoder.isRunning():
             self.status.setText("Wait for offline decoder to complete before closing…")
             event.ignore()
