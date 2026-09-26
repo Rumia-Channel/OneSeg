@@ -589,14 +589,15 @@ class MainWindow(QMainWindow):
             )
 
     def _live_player_failed(self, message):
-        # TS may lack PAT/PMT or have broken PES. Keep RF reception running:
-        # this alone is not a native USB device failure.
+        # Partial TS can lack PAT/PMT or contain broken PES. Stop the
+        # experiment, but do not treat this as a native USB failure.
+        if self.live is None:
+            return
+        self._stop_live()
         self.status.setText(
-            f"Live video demux not established ({message}); RF decoding "
-            "continues until Stop. Partial TS is not continuous playback."
+            f"Experimental live player could not demux TS ({message}). "
+            "Reception stopped; offline packet recovery remains available."
         )
-        if self.live_stream is not None:
-            self.live_stream.close()
 
     def _live_failed(self, message):
         self.status.setText(message)
@@ -704,6 +705,7 @@ class MainWindow(QMainWindow):
     def _offline_decode_finished(self):
         self.decoder = None
         self.decode_iq_btn.setEnabled(True)
+        self._update_live_button()
 
     def _play_ts(self):
         if self.live is not None:
