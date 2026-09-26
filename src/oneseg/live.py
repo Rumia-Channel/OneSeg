@@ -1,8 +1,8 @@
 """Experimental LIVE RTL-SDR -> offline-window decode -> genuine TS packets.
 
 This is a *first live integration*, NOT gapless/verified TV playback:
-each 3-second window requires the time-deinterleaver to warm up again,
-and USB reads have no hardware timestamps. The decoder may lag or fail
+each 3-second raw u8 IQ window is expanded off the USB thread,
+its time-deinterleaver warms up again, and USB reads have no timestamps. The decoder may lag or fail
 and the GUI must report this instead of inventing an uninterrupted TS.
 No native pyrtlsdr async transfer/cancel is used: the device is opened,
 read synchronously, and closed by this one Qt worker thread.
@@ -19,7 +19,8 @@ from typing import Callable
 
 from PySide6.QtCore import QThread, Signal
 
-from .continuous import CaptureCancelled, READ_SAMPLES, record_stream
+from .continuous import CaptureCancelled
+from .raw_capture import record_raw_window, expand_raw_to_c64
 from .decode import decode_capture
 from .dsp import DEFAULT_SAMPLE_RATE
 from .ppm import PpmCorrection
@@ -152,10 +153,21 @@ class ExperimentalLiveReceiver(QThread):
                     if item is None:
                         return
                     target = item.with_suffix(".ts")
+                    iq = item.with_suffix(".c64")
                     try:
                         if not self.stop_event.is_set():
+                            # The potentially CPU-intensive u8->float
+                            # conversion is outside the USB reader thread.
+                            expand_raw_to_c64(
+                                item, iq,
+                                metadata={
+                                    "source": "experimental_live_window",
+                                    "center_frequency_hz": self.frequency_hz,
+                                    "gain_db": self.gain, "ppm": self.ppm,
+                                },
+                            )
                             result = self.decode_function(
-                                item, target,
+                                iq, target,
                                 seconds=self.chunk_seconds,
                                 max_ofdm_symbols=self.max_ofdm_symbols,
                             )
@@ -187,7 +199,8 @@ class ExperimentalLiveReceiver(QThread):
                         )
                     finally:
                         for name in (
-                            item, item.with_suffix(".c64.json"),
+                            item, item.with_name(item.name + ".partial"),
+                            iq, iq.with_suffix(".c64.json"),
                             target, target.with_suffix(".ts.json"),
                         ):
                             name.unlink(missing_ok=True)
@@ -228,19 +241,15 @@ class ExperimentalLiveReceiver(QThread):
 
             ordinal = 0
             while not self.stop_event.is_set():
-                capture = root / f"window_{ordinal:06d}.c64"
+                capture = root / f"window_{ordinal:06d}.u8iq"
                 ordinal += 1
                 try:
-                    record_stream(
+                    record_raw_window(
                         device, capture,
                         samples_required=round(
                             DEFAULT_SAMPLE_RATE * self.chunk_seconds
                         ),
-                        metadata={
-                            "source": "experimental_live_window",
-                            "center_frequency_hz": self.frequency_hz,
-                            "gain_db": self.gain, "ppm": self.ppm,
-                        },
+                        warmup_buffers=1 if ordinal == 1 else 0,
                         cancelled=self.stop_event.is_set,
                     )
                 except CaptureCancelled:
@@ -255,7 +264,9 @@ class ExperimentalLiveReceiver(QThread):
                 except Full:
                     missing += 1
                     capture.unlink(missing_ok=True)
-                    capture.with_suffix(".c64.json").unlink(missing_ok=True)
+                    capture.with_name(
+                        capture.name + ".partial"
+                    ).unlink(missing_ok=True)
                     self.status.emit(
                         "LIVE decoder behind RF by more than two "
                         "3-second windows; dropped an ENTIRE window. "
@@ -287,7 +298,9 @@ class ExperimentalLiveReceiver(QThread):
                         continue
                     if dropped is not None:
                         dropped.unlink(missing_ok=True)
-                        dropped.with_suffix(".c64.json").unlink(missing_ok=True)
+                        dropped.with_name(
+                            dropped.name + ".partial"
+                        ).unlink(missing_ok=True)
             if decoder is not None:
                 decoder.join()
             if temporary is not None:
