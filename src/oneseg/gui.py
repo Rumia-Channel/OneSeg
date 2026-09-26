@@ -96,7 +96,7 @@ class MainWindow(QMainWindow):
         form = QFormLayout(controls)
         self.mode = QComboBox()
         self.mode.addItem("SDR (spectrum / mono WFM)", "sdr")
-        self.mode.addItem("1seg RF research (no video decoder)", "oneseg")
+        self.mode.addItem("1seg RF / experimental LIVE decode", "oneseg")
         form.addRow("Mode", self.mode)
 
         self.channel = QSpinBox()
@@ -518,6 +518,20 @@ class MainWindow(QMainWindow):
         self.live_btn.setEnabled(permitted)
         self.live_btn.setText("Watch 1seg LIVE (experimental)")
 
+    def _live_controls(self, running: bool):
+        # A live session owns the RF center/gain for its entire lifetime.
+        # Silently changing GUI settings must not imply that the tuner retunes.
+        self.mode.setEnabled(not running)
+        self.channel.setEnabled(
+            not running and self.mode.currentData() == "oneseg"
+        )
+        self.frequency.setEnabled(not running)
+        self.ppm.setEnabled(not running)
+        self.auto_gain.setEnabled(not running)
+        self.gain.setEnabled(
+            not running and not self.auto_gain.isChecked()
+        )
+
     def _toggle_live(self):
         if self.live is not None:
             self._stop_live()
@@ -558,6 +572,7 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(True)
         self.play_ts_btn.setEnabled(False)
         self.decode_iq_btn.setEnabled(False)
+        self._live_controls(True)
         self._update_live_button()
         self.video.setText(
             "EXPERIMENTAL LIVE: waiting for genuine TS packets. "
@@ -639,6 +654,7 @@ class MainWindow(QMainWindow):
 
     def _live_finished(self):
         self.live = None
+        self._live_controls(False)
         if self.live_stream is not None:
             self.live_stream.close()
         self.live_stream = None
