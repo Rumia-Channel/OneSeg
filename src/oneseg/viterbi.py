@@ -9,6 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 import numpy as np
+from numba import njit
 
 # K=7 equivalent NASA generator polynomials (bit-reversed canonical forms).
 POLYNOMIALS = (0x4F, 0x6D)
@@ -59,39 +60,59 @@ def depuncture(soft_bits: np.ndarray, rate: str = "1/2") -> np.ndarray:
     return output.reshape(-1, 2)
 
 
+@njit(cache=True, nogil=True)
+def _fast_trellis(symbols, pred0, pred1, expected, end_state_zero):
+    """Native-code equivalent of the 64-state reference Viterbi recurrence.
+
+    The packed history is one uint8 per state/step, not an unbounded
+    Python object per trellis step. Compiled code releases the GIL while
+    a separate thread reads the Windows USB tuner.
+    """
+    total = len(symbols)
+    history = np.empty((total, 64), dtype=np.uint8)
+    scores = np.full(64, 1.0e30, dtype=np.float64)
+    scores[0] = 0.0
+    for step in range(total):
+        a = float(symbols[step, 0])
+        b = float(symbols[step, 1])
+        next_scores = np.empty(64, dtype=np.float64)
+        least = 1.0e30
+        for state in range(64):
+            v00 = float(expected[0, state, 0])
+            v01 = float(expected[0, state, 1])
+            v10 = float(expected[1, state, 0])
+            v11 = float(expected[1, state, 1])
+            left = scores[pred0[state]] + abs(v00 - a) + abs(v01 - b)
+            right = scores[pred1[state]] + abs(v10 - a) + abs(v11 - b)
+            choose_right = right < left
+            history[step, state] = 1 if choose_right else 0
+            cost = right if choose_right else left
+            next_scores[state] = cost
+            if cost < least:
+                least = cost
+        scores = next_scores - least
+    state = 0
+    if not end_state_zero:
+        state = int(np.argmin(scores))
+    decoded = np.empty(total, dtype=np.uint8)
+    for step in range(total - 1, -1, -1):
+        decoded[step] = state & 1
+        state = (state >> 1) | (int(history[step, state]) << 5)
+    return decoded
+
+
 def decode_soft_bits(
     received: np.ndarray, rate: str = "1/2", *, end_state_zero: bool = False
 ) -> np.ndarray:
     """Viterbi decode punctured soft decisions, producing one decoded bit per trellis step.
 
-    The trellis starts at state zero (for a known block boundary). For random
-    midstream samples, acquisition/traceback boundary logic remains to be added.
+    The trellis starts at state zero (for a known block boundary). The
+    numba-compiled loop releases the GIL for concurrent USB acquisition.
+    For random midstream samples, state acquisition remains approximate.
     """
     symbols = depuncture(received, rate)
     pred0, pred1, expected = _transitions()
-    scores = np.full(64, np.inf, dtype=np.float64)
-    scores[0] = 0.0
-    history = np.empty((len(symbols), 64), dtype=np.uint8)
-    rows = np.arange(64)
-    for step, pair in enumerate(symbols):
-        # Missing punctured bits have the same penalty for 0 and 1.
-        score0 = scores[pred0] + np.sum(
-            np.abs(expected[0] - pair[None, :]), axis=1
-        )
-        score1 = scores[pred1] + np.sum(
-            np.abs(expected[1] - pair[None, :]), axis=1
-        )
-        choose1 = score1 < score0
-        history[step] = choose1
-        scores = np.where(choose1, score1, score0)
-        scores -= np.min(scores)
-    state = 0 if end_state_zero else int(np.argmin(scores))
-    decoded = np.empty(len(symbols), dtype=np.uint8)
-    for step in range(len(symbols) - 1, -1, -1):
-        decoded[step] = state & 1
-        state = int((state >> 1) | (int(history[step, state]) << 5))
-    return decoded
-
+    return _fast_trellis(symbols, pred0, pred1, expected, end_state_zero)
 
 def convolutional_encode_test(bits: np.ndarray, rate: str = "1/2") -> np.ndarray:
     """Synthetic test encoder with puncturing; not an ISDB-T transmitter."""
