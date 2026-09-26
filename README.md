@@ -464,25 +464,25 @@ or that a streaming I/Q → TS GUI pipeline is integrated.
 ## Single-command offline I/Q -> partial TS (Windows and Linux)
 
 The offline stages previously required manually running
-\`oneseg-pilots\` → \`oneseg-deinterleave\` →
-\`oneseg-recover\`. Use \`oneseg-decode\` instead for a
+`oneseg-pilots` → `oneseg-deinterleave` →
+`oneseg-recover`. Use `oneseg-decode` instead for a
 **previously recorded .c64** with a matching adjacent
-\`.c64.json\`. It runs those same stages, requires at least
+`.c64.json`. It runs those same stages, requires at least
 one TMCC parity-verified frame, selects frame position and
 PRBS phase through actual sync/RS checks, and cleans its
 large temporary .npz intermediates automatically. It does
 not open the RTL-SDR tuner and never makes fake packets.
 
-\`\`\`powershell
+```powershell
 git pull
 uv sync
 uv run oneseg-decode ch20_safe.c64 --seconds 3 --max-ofdm-symbols 1020 --output ch20_direct_partial.ts
 uv run oneseg-ts inspect ch20_direct_partial.ts
 uv run oneseg
-\`\`\`
+```
 
-Output files are \`ch20_direct_partial.ts\` and
-\`ch20_direct_partial.ts.json\`. The JSON includes
+Output files are `ch20_direct_partial.ts` and
+`ch20_direct_partial.ts.json`. The JSON includes
 the original capture path, clipping percentage, validated
 TMCC frame count, RS-confirmed packet count, rejected
 204-byte blocks, PID counts and PAT/PMT discovery.
@@ -490,7 +490,7 @@ Existing TS/metadata will not be overwritten.
 
 In the GUI, close/stop the receiver first and choose
 **Decode saved IQ → partial TS…**; select the recorded
-\`.c64\`, then a *new* \`.ts\` output name. Decoding happens
+`.c64`, then a *new* `.ts` output name. Decoding happens
 in a separate QThread and does not access USB. The GUI
 reports how many genuine RS-validated packets were saved
 and warns if PAT is absent. The **Play decoded TS…** action
