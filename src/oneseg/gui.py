@@ -743,6 +743,7 @@ class MainWindow(QMainWindow):
             return
         self.decoder = OfflineDecodeWorker(source, output)
         self.start_btn.setEnabled(False)
+        self._update_live_button()
         self.decoder.progress.connect(self.status.setText)
         self.decoder.succeeded.connect(self._decoded_iq)
         self.decoder.failed.connect(self._offline_decode_failed)
@@ -794,6 +795,7 @@ class MainWindow(QMainWindow):
         if not filename:
             return
         self.player = TransportPlayer(Path(filename))
+        self._update_live_button()
         self.player.image_ready.connect(self._show_frame)
         self.player.status.connect(self.status.setText)
         self.player.failed.connect(self._error)
@@ -816,6 +818,7 @@ class MainWindow(QMainWindow):
         self.player = None
         self.play_ts_btn.setEnabled(self.live is None)
         self.play_ts_btn.setText("Play decoded TS…")
+        self._update_live_button()
 
     def _capture_short(self):
         if self.worker is None:
