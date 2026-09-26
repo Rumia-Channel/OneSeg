@@ -549,10 +549,16 @@ number of failed windows and actual rendered video frames.
 Use `Stop` or the live button to release the tuner.
 
 The transport player receives RS-validated packets through
-a bounded, non-seekable TS queue. A missing PAT/PMT or broken
-PES can cause PyAV probing to fail; this is reported as a
-failed live playback trial, not fabricated video. The app
-does not silently invent missing packets or blank video.
+a bounded, non-seekable TS queue. **PyAV is started only
+after a window contains authentic, CRC-validated PAT and PMT
+discovered from the recovered TS.** Earlier RS-valid packets
+without complete PSI are counted as skipped startup fragments,
+not queued indefinitely and not replaced with fabricated
+PAT/PMT. The previously examined 203-packet partial TS
+did **not** contain PAT; a positive packet count by itself
+cannot unlock the live player. Broken PES may still make
+PyAV probing fail, which is reported as a failed playback
+trial. The app does not invent missing packets or blank video.
 A successful tuner open or TS packet count by itself
 **does not certify functioning audiovisual reception**.
 
