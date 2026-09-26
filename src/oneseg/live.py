@@ -142,6 +142,7 @@ class ExperimentalLiveReceiver(QThread):
         capture_queue: Queue[Path | None] = Queue(maxsize=2)
         decoder: Thread | None = None
         temporary: TemporaryDirectory | None = None
+        capture_timings: dict[Path, float] = {}
 
         try:
             temporary = TemporaryDirectory(prefix="oneseg-live-")
@@ -155,6 +156,8 @@ class ExperimentalLiveReceiver(QThread):
                         return
                     target = item.with_suffix(".ts")
                     iq = item.with_suffix(".c64")
+                    capture_elapsed = capture_timings.pop(item, None)
+                    decode_started = perf_counter()
                     try:
                         if not self.stop_event.is_set():
                             # The potentially CPU-intensive u8->float
@@ -184,6 +187,11 @@ class ExperimentalLiveReceiver(QThread):
                                 "has_pmt": bool(result["pmt_elementary_streams"]),
                                 "overloaded": bool(result["input_overload_warning"]),
                                 "windows_failed": missing,
+                                "usb_window_seconds": capture_elapsed,
+                                "decoder_window_seconds": round(
+                                    perf_counter() - decode_started, 2
+                                ),
+                                "queued_windows": capture_queue.qsize(),
                             })
                             self.transport.emit(data)
                             self.status.emit(
