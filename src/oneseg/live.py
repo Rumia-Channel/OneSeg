@@ -145,7 +145,7 @@ class ExperimentalLiveReceiver(QThread):
             temporary = TemporaryDirectory(prefix="oneseg-live-")
             root = Path(temporary.name)
 
-        def consume():
+            def consume():
                 nonlocal decoded, missing
                 while True:
                     item = capture_queue.get()
