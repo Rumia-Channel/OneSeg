@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QSettings
+from PySide6.QtCore import Qt, QSettings, QThread, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -36,6 +36,29 @@ from .channels import physical_channel_hz
 from .receiver import Receiver
 from .player import TransportPlayer
 from .diagnostics import explain_receiver_error
+from .decode import decode_capture
+
+ 
+class OfflineDecodeWorker(QThread):
+    """Decode a stored I/Q capture without touching RTL-SDR or GUI thread."""
+    progress = Signal(str)
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, capture: Path, target: Path):
+        super().__init__()
+        self.capture = Path(capture)
+        self.target = Path(target)
+
+    def run(self):
+        try:
+            summary = decode_capture(
+                self.capture, self.target, progress=self.progress.emit
+            )
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+        else:
+            self.succeeded.emit(summary)
 
 
 class MainWindow(QMainWindow):
@@ -45,6 +68,7 @@ class MainWindow(QMainWindow):
         self.resize(1050, 720)
         self.worker: Receiver | None = None
         self.player: TransportPlayer | None = None
+        self.decoder: OfflineDecodeWorker | None = None
         self.scanning = False
         self.scan_rows = []
         self.settings = QSettings("Rumia-Channel", "OneSeg")
@@ -54,8 +78,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(shell)
 
         self.notice = QLabel(
-            "1seg live video decoding is not integrated. Offline TS, audio/video "
-            "playback and RF/I-Q analysis are available."
+            "Live 1seg video is not integrated. Saved I/Q can now be decoded "
+            "offline to RS-verified partial MPEG-TS; playback is not guaranteed."
         )
         self.notice.setWordWrap(True)
         self.notice.setStyleSheet(
@@ -165,6 +189,11 @@ class MainWindow(QMainWindow):
         self.stop_btn = QPushButton("Stop")
         self.record_btn = QPushButton("Record I/Q…")
         self.play_ts_btn = QPushButton("Play decoded TS…")
+        self.decode_iq_btn = QPushButton("Decode saved IQ → partial TS…")
+        self.decode_iq_btn.setToolTip(
+            "Decode a previously recorded .c64 and its adjacent .c64.json "
+            "without USB tuner access; PAT/PMT and video are not guaranteed."
+        )
         self.short_capture_btn = QPushButton("Capture 3s for decoder…")
         self.short_capture_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
@@ -173,6 +202,7 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.stop_btn)
         actions.addWidget(self.record_btn)
         actions.addWidget(self.short_capture_btn)
+        actions.addWidget(self.decode_iq_btn)
         actions.addWidget(self.play_ts_btn)
         layout.addLayout(actions)
 
@@ -193,6 +223,7 @@ class MainWindow(QMainWindow):
         self.record_btn.clicked.connect(self._record)
         self.short_capture_btn.clicked.connect(self._capture_short)
         self.play_ts_btn.clicked.connect(self._play_ts)
+        self.decode_iq_btn.clicked.connect(self._decode_saved_iq)
         self.scan_button.clicked.connect(self._scan_clicked)
         self.scan_tune_button.clicked.connect(self._tune_scan_selection)
         self.scan_export_button.clicked.connect(self._export_scan)
@@ -452,6 +483,81 @@ class MainWindow(QMainWindow):
             return
         self.status.setText(f"RF scan saved: {path.name}")
 
+    def _decode_saved_iq(self):
+        if self.decoder is not None:
+            return
+        if self.worker is not None:
+            QMessageBox.information(
+                self, "Stop receiver first",
+                "Stop the RTL-SDR receiver before offline decoding so CPU "
+                "processing does not interfere with USB reception."
+            )
+            return
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Select recorded complex64 I/Q (.c64)", str(Path.home()),
+            "Complex64 I/Q (*.c64)",
+        )
+        if not filename:
+            return
+        source = Path(filename)
+        if not source.with_suffix(source.suffix + ".json").is_file():
+            QMessageBox.warning(
+                self, "Missing capture metadata",
+                "The matching .c64.json must be next to the I/Q recording.",
+            )
+            return
+        suggested = source.with_name(source.stem + "_partial.ts")
+        destination, _ = QFileDialog.getSaveFileName(
+            self, "Save verified partial MPEG-TS", str(suggested),
+            "MPEG-TS (*.ts)",
+        )
+        if not destination:
+            return
+        output = Path(destination)
+        if output.suffix.lower() != ".ts":
+            output = output.with_suffix(".ts")
+        if output.exists() or output.with_suffix(".ts.json").exists():
+            QMessageBox.warning(
+                self, "Already exists",
+                "Choose a new filename; decoded TS/sidecar is never overwritten."
+            )
+            return
+        self.decoder = OfflineDecodeWorker(source, output)
+        self.decoder.progress.connect(self.status.setText)
+        self.decoder.succeeded.connect(self._decoded_iq)
+        self.decoder.failed.connect(self._offline_decode_failed)
+        self.decoder.finished.connect(self._offline_decode_finished)
+        self.decode_iq_btn.setEnabled(False)
+        self.status.setText(
+            "Starting offline decode; tuner not accessed and TS may be partial..."
+        )
+        self.decoder.start()
+
+    def _decoded_iq(self, summary):
+        packets = summary["rs_and_ts_accepted_packets"]
+        contains_pat = bool(summary["pat_programs"])
+        self.status.setText(
+            f"Offline TS saved: {packets} RS-verified packets. "
+            f"PAT: {'present' if contains_pat else 'absent'}; "
+            "missing packets are not reconstructed. No live video."
+        )
+        if not contains_pat:
+            self.video.setText(
+                f"Partial TS: {packets} genuine packets, but no PAT in "
+                "decoded interval. Video playback may fail."
+            )
+
+    def _offline_decode_failed(self, error):
+        self.status.setText(f"Offline decode failed: {error}")
+        QMessageBox.warning(
+            self, "Offline decode failed",
+            error + "\nNo MPEG-TS was fabricated from unverified data.",
+        )
+
+    def _offline_decode_finished(self):
+        self.decoder = None
+        self.decode_iq_btn.setEnabled(True)
+
     def _play_ts(self):
         if self.player is not None:
             self.player.stop()
@@ -561,6 +667,10 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
+        if self.decoder is not None and self.decoder.isRunning():
+            self.status.setText("Wait for offline decoder to complete before closing…")
+            event.ignore()
+            return
         if self.player and self.player.isRunning():
             self.player.stop()
             if not self.player.wait(3000):
