@@ -73,6 +73,8 @@ class MainWindow(QMainWindow):
         self.live: ExperimentalLiveReceiver | None = None
         self.live_stream: LiveTsBuffer | None = None
         self.live_frames = 0
+        self.live_player_started = False
+        self.live_ts_skipped_waiting_psi = 0
         self.scanning = False
         self.scan_rows = []
         self.settings = QSettings("Rumia-Channel", "OneSeg")
@@ -552,6 +554,8 @@ class MainWindow(QMainWindow):
             )
             return
         self.live_frames = 0
+        self.live_player_started = False
+        self.live_ts_skipped_waiting_psi = 0
         self.live_stream = LiveTsBuffer()
         self.live = ExperimentalLiveReceiver(
             frequency_hz=round(self.frequency.value() * 1e6),
@@ -582,11 +586,17 @@ class MainWindow(QMainWindow):
             "LIVE trial: buffering 3 s per window; zero packets so far. "
             "Watch accepted/rejected counts and whether PAT is present."
         )
-        self.player.start()
+        # Do not initialize PyAV with an arbitrary PAT-less TS fragment.
+        # Start video only after real PAT and PMT were recovered together.
         self.live.start()
 
     def _live_transport(self, data):
         if self.live_stream is None:
+            return
+        if not self.live_player_started:
+            # These are genuine packets but cannot start a known program;
+            # do not keep an unbounded PAT-less buffer or invent PSI.
+            self.live_ts_skipped_waiting_psi += len(data) // 188
             return
         try:
             self.live_stream.push(data)
@@ -595,13 +605,26 @@ class MainWindow(QMainWindow):
             self._stop_live()
 
     def _live_progress(self, report):
+        if (
+            not self.live_player_started
+            and report["has_pat"]
+            and report["has_pmt"]
+            and self.player is not None
+        ):
+            self.live_player_started = True
+            self.player.start()
+            self.status.setText(
+                "Real PAT/PMT recovered; starting PyAV from this TS window."
+            )
         self.live_metrics.setText(
             f"LIVE: {report['accepted_total']} real TS packets "
             f"(latest +{report['accepted_chunk']}, "
             f"{report['rejected_chunk']} bad); "
             f"{report['windows_failed']} failed windows; "
             f"PAT {'found' if report['has_pat'] else 'absent'}, "
-            f"ADC {'OVERLOADED' if report['overloaded'] else 'below 5% full scale'}; "
+            f"PMT {'found' if report['has_pmt'] else 'absent'}, "
+            f"skipped {self.live_ts_skipped_waiting_psi} packets while "
+            f"waiting for verified PSI; ADC {'OVERLOADED' if report['overloaded'] else 'below 5% full scale'}; "
             f"{self.live_frames} rendered video frames. "
             "3 s window discontinuities remain."
         )
@@ -650,10 +673,14 @@ class MainWindow(QMainWindow):
         if self.live_stream is not None:
             self.live_stream.close()
         if self.player is not None:
-            self.player.stop()
+            if self.live_player_started:
+                self.player.stop()
+            else:
+                self.player = None
 
     def _live_finished(self):
         self.live = None
+        self.live_player_started = False
         self._live_controls(False)
         if self.live_stream is not None:
             self.live_stream.close()
