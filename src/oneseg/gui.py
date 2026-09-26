@@ -662,9 +662,10 @@ class MainWindow(QMainWindow):
         )
 
     def _live_failed(self, message):
+        # Release USB and unblock PyAV before any modal error dialog.
+        self._stop_live()
         self.status.setText(message)
         QMessageBox.warning(self, "Experimental live receiver error", message)
-        self._stop_live()
 
     def _stop_live(self):
         if self.live is None:
