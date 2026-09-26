@@ -192,6 +192,20 @@ class ExperimentalLiveReceiver(QThread):
                         ):
                             name.unlink(missing_ok=True)
 
+            # JIT initialization can briefly hold the Python GIL. Do it
+            # BEFORE opening USB, not during the first subsequent RF read
+            # where blocking Python callbacks could overflow RTL buffers.
+            import numpy as np
+            from .viterbi import decode_soft_bits
+            self.status.emit(
+                "Preparing compiled 64-state Viterbi decoder "
+                "before RTL-SDR capture..."
+            )
+            decode_soft_bits(
+                np.zeros(3 * 64, dtype=np.float32), "2/3"
+            )
+            if self.stop_event.is_set():
+                return
             decoder = Thread(
                 target=consume, name="OneSeg-Live-Decoder", daemon=False
             )
