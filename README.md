@@ -514,7 +514,8 @@ unclipped payload FEC and reliable PAT/PMT/PES continuity.
 **New but not yet verified as continuous television:** the Windows GUI
 now exposes `Watch 1seg LIVE (experimental)`. It uses the same
 crash-avoiding synchronous USB I/Q acquisition as `oneseg-capture`,
-a separate I/Q writer thread, a separate offline-window decoder thread,
+a direct buffered 8-bit I/Q writer with no heavy conversion in the USB loop,
+a separate offline-window decoder thread that expands raw I/Q to complex64,
 Numba-compiled 64-state Viterbi (releases the GIL), real shortened
 RS(204,188) validation and an in-memory blocking MPEG-TS input for
 the existing PyAV video/audio player. It **does not** invoke the
@@ -583,3 +584,44 @@ whether an actual video frame or audio was produced. If
 packet count remains 0 or PAT is always absent, stop LIVE,
 then capture a fresh short 20ch `.c64` and matching metadata
 using the established safe CLI path, with the same gain.
+
+
+## Windows live capture fix: writer queue overran (2026-09-26)
+
+A real Windows 11 20ch live trial at 515.142857 MHz, manual gain 0 dB
+and 0 ppm received **49 authentic RS-verified 188-byte MPEG-TS packets**
+but rejected **606 204-byte candidate blocks**. PAT and PMT were not
+detected and no video frames rendered. The trial then stopped with
+`RTL-SDR live USB capture failed: I/Q writer queue overran; capture cannot
+be trusted`. This is the *live recording's float-conversion/writer queue
+filling*, not proof of a failed tuner or bad physical channel.
+
+The updated live USB reader writes compact interleaved 8-bit I/Q directly
+into a 1-MiB buffered temporary `.u8iq` file. A 3-second window occupies
+12,288,000 bytes instead of 49,152,000 bytes of complex64. Only after
+capture finishes does the independent decoder thread expand the window
+into a standard `.c64` with adjacent `.c64.json`, then feed the established
+offline TMCC/FEC/TS pipeline. All temporary intermediates are removed
+after decode. The original standalone `oneseg-capture` is unchanged.
+
+This removes the specific bounded *I/Q writer queue* failure path, but
+does not guarantee continuous samples, a fast enough DSP thread, PAT/PMT,
+or rendered video. A separate two-window queue between acquisition and
+DSP remains bounded and will visibly report dropped whole windows if
+DSP lags. The GUI now displays **USB and DSP wall time per 3-second
+window** and the number of pending windows; use these timings to
+distinguish RF acquisition failures from decoder CPU saturation.
+
+On the original PC, fully exit OneSeg and any other RTL-SDR app before
+updating:
+
+```powershell
+git pull
+uv sync
+uv run oneseg
+```
+
+Select 1seg mode, 20ch, manual gain 0 dB, Automatic OFF, then press
+**Watch 1seg LIVE (experimental)** directly, not Start receiver.
+Check the LIVE metrics after 20–30 seconds and record whether USB reads
+complete, DSP falls behind, PAT/PMT appear, or a real video frame renders.
