@@ -629,7 +629,10 @@ class MainWindow(QMainWindow):
             f"skipped {self.live_ts_skipped_waiting_psi} packets while "
             f"waiting for verified PSI; ADC {'OVERLOADED' if report['overloaded'] else 'below 5% full scale'}; "
             f"{self.live_frames} rendered video frames. "
-            "3 s window discontinuities remain."
+            f"USB {report.get('usb_window_seconds')}s, "
+            f"DSP {report.get('decoder_window_seconds')}s per 3 s window; "
+            f"pending {report.get('queued_windows')} windows. "
+            "Window discontinuities remain."
         )
         if self.live_frames:
             return  # Do not overwrite a real rendered video frame with text.
