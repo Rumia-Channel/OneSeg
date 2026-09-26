@@ -14,6 +14,7 @@ from io import RawIOBase
 from pathlib import Path
 from queue import Empty, Full, Queue
 from tempfile import TemporaryDirectory
+from time import perf_counter
 from threading import Condition, Event, Thread
 from typing import Callable
 
