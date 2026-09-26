@@ -220,6 +220,9 @@ class MainWindow(QMainWindow):
 
         self.status = QLabel("Stopped")
         layout.addWidget(self.status)
+        self.live_metrics = QLabel("Live decoder: idle")
+        self.live_metrics.setWordWrap(True)
+        layout.addWidget(self.live_metrics)
 
         self.mode.currentIndexChanged.connect(self._mode_changed)
         self.channel.valueChanged.connect(self._channel_changed)
@@ -560,6 +563,10 @@ class MainWindow(QMainWindow):
             "EXPERIMENTAL LIVE: waiting for genuine TS packets. "
             "This is not yet verified gapless video."
         )
+        self.live_metrics.setText(
+            "LIVE trial: buffering 3 s per window; zero packets so far. "
+            "Watch accepted/rejected counts and whether PAT is present."
+        )
         self.player.start()
         self.live.start()
 
@@ -573,6 +580,16 @@ class MainWindow(QMainWindow):
             self._stop_live()
 
     def _live_progress(self, report):
+        self.live_metrics.setText(
+            f"LIVE: {report['accepted_total']} real TS packets "
+            f"(latest +{report['accepted_chunk']}, "
+            f"{report['rejected_chunk']} bad); "
+            f"{report['windows_failed']} failed windows; "
+            f"PAT {'found' if report['has_pat'] else 'absent'}, "
+            f"ADC {'OVERLOADED' if report['overloaded'] else 'below 5% full scale'}; "
+            f"{self.live_frames} rendered video frames. "
+            "3 s window discontinuities remain."
+        )
         if self.live_frames:
             return  # Do not overwrite a real rendered video frame with text.
         if report["overloaded"]:
@@ -597,6 +614,10 @@ class MainWindow(QMainWindow):
         self.status.setText(
             f"Experimental live player could not demux TS ({message}). "
             "Reception stopped; offline packet recovery remains available."
+        )
+        self.live_metrics.setText(
+            "Live player cannot demultiplex currently recovered partial TS. "
+            "No station/video success claimed."
         )
 
     def _live_failed(self, message):
@@ -629,6 +650,10 @@ class MainWindow(QMainWindow):
         self.status.setText(
             f"Live experiment stopped. Rendered {self.live_frames} "
             "video frames; this does not imply gapless live TV."
+        )
+        self.live_metrics.setText(
+            self.live_metrics.text()
+            + f" Session ended: {self.live_frames} video frames."
         )
 
     def _decode_saved_iq(self):
