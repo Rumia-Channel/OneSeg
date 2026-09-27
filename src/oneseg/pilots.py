@@ -120,18 +120,34 @@ def equalize_segment(fft: np.ndarray, alignment: PilotAlignment) -> np.ndarray:
         raise ValueError("central segment outside FFT")
     received = fft[:, offsets]
     reference = central_pilot_polarities()
+    # Pilots have only four distinct layouts. Interpolate all symbols
+    # sharing each layout in one NumPy batch, instead of 2*~2644 Python
+    # np.interp calls and small temporary arrays per 3-second RF window.
     out = np.empty(received.shape, dtype=np.complex64)
-    for symbol in range(len(fft)):
-        positions = scattered_pilot_indices(symbol, alignment.symbol_phase)
-        estimate_at_pilots = received[symbol, positions] / reference[positions]
-        # np.interp extrapolates the closest estimated edge channel.
+    x = np.arange(ACTIVE)
+    for phase in range(4):
+        rows = np.arange(phase, len(fft), 4)
+        if not len(rows):
+            continue
+        positions = scattered_pilot_indices(phase, alignment.symbol_phase)
+        at_pilots = received[np.ix_(rows, positions)] / reference[positions]
+        right = np.searchsorted(positions, x, side="right")
+        left = np.clip(right - 1, 0, len(positions) - 1)
+        right = np.clip(right, 0, len(positions) - 1)
+        span = positions[right] - positions[left]
+        fraction = np.divide(
+            x - positions[left], span,
+            out=np.zeros(ACTIVE, dtype=np.float64),
+            where=span != 0,
+        )
+        # At edges left==right: same constant extrapolation as np.interp.
         estimate = (
-            np.interp(np.arange(ACTIVE), positions, estimate_at_pilots.real)
-            + 1j * np.interp(np.arange(ACTIVE), positions, estimate_at_pilots.imag)
+            at_pilots[:, left] * (1 - fraction)[None, :]
+            + at_pilots[:, right] * fraction[None, :]
         )
         if np.any(np.abs(estimate) < 1e-9):
             raise ValueError("near-zero pilot channel estimate")
-        out[symbol] = received[symbol] / estimate
+        out[rows] = received[rows] / estimate
     return out
 
 
