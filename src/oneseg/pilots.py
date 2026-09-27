@@ -227,7 +227,7 @@ def analyze_capture(
     samples = np.fromfile(path, dtype="<c8", count=int(seconds * DEFAULT_SAMPLE_RATE))
     if len(samples) < int(0.5 * DEFAULT_SAMPLE_RATE):
         raise ValueError("not enough captured I/Q")
-    fullscale_count, measured_count, _ = block_quality(samples)
+    fullscale_count, measured_count, mean_power = block_quality(samples)
     raw = samples.astype(np.complex128)
     raw -= raw.mean()
     lowpass = butter(8, 205_000, fs=DEFAULT_SAMPLE_RATE, output="sos")
@@ -253,6 +253,8 @@ def analyze_capture(
         "fractional_cfo_hz": lock.coarse_cfo_hz,
         "fft_symbols": len(fft),
         "iq_fullscale_percent": 100 * fullscale_count / measured_count,
+        "iq_rms": float(np.sqrt(mean_power)),
+        "gain_db": metadata.get("gain_db"),
         "iq_overload_warning": fullscale_count / measured_count > 0.05,
         **asdict(alignment),
         "integer_offset_hz": alignment.integer_offset_hz,
