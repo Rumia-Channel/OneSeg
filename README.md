@@ -904,3 +904,66 @@ the number of recovered packets or the corrected gain
 aggregation. Save existing survey files for comparison;
 repeating an identical 14-window RF survey is not required
 merely to correct the aggregation bug.
+
+
+## RF → TS extraction bundle (preserve all failed stages for debugging)
+
+The automatic gain survey deliberately deleted its temporary I/Q
+and constellation files. Once a candidate tuner setting is identified,
+`oneseg-extract` creates a **new persistent evidence directory**
+containing the real raw I/Q and the outputs of each verified
+receiver stage, even when a later stage fails.
+
+After exiting OneSeg, SDR++ and other RTL-SDR applications, run
+the following in the OneSeg source checkout on the FC0013 Windows PC:
+
+```powershell
+git pull
+uv sync
+uv run oneseg-extract --channel 20 --gain=-6.5 --ppm 0 --seconds 3 --captures 3 --max-ofdm-symbols 2200
+```
+
+The default output is a unique
+`oneseg_extract_ch20_<local timestamp_microseconds>` directory.
+Use `--output-dir <new folder>` for a specific name. The tool
+refuses to overwrite a folder that already exists. Each
+`capture_01`, `capture_02`, `capture_03` keeps:
+
+| Filename | Actual contents |
+|---|---|
+| `iq.u8iq` | Exact synchronous 8-bit RTL USB I/Q window |
+| `iq.c64`, `iq.c64.json` | Complex64 I/Q, with *commanded* gain and contradictory driver readback separately recorded |
+| `quality.json` | I/Q RMS and exact-full-scale occupancy |
+| `tmcc.json` | Mode-3 CP/pilot/TMCC sync and protected parity diagnostics |
+| `layer_a.npz` | Real 384-carrier Layer-A constellation, prior to deinterleaving |
+| `deinterleaved.npz`, `.npz.json` | Reconstructed QPSK hard/soft bits and provenance, **only when TMCC is parity verified** |
+| `partial.ts`, `partial.ts.json` | **Only authentic RS-verified 188-byte MPEG-TS packets**, if FEC/TS synchronization succeeds |
+
+Every stage is recorded in `extract_manifest.json` at the
+top of the output folder. RF capture, error reporting and
+file retention occur before the independent DSP stages:
+the USB tuner is **closed before NumPy/Numba/RS processing**
+so DSP cannot starve a simultaneous RTL capture. The native
+async/cancel USB API is never invoked.
+
+`--captures 3` records three separate 3-second windows,
+not one synchronized continuous stream. Processing
+2200 OFDM rows aims to retain more authentic broadcast
+data than the previous 1020-row quick smoke test; long
+FEC computation and output size can be substantial.
+PAT/PMT/PES and actual playable television are NOT
+guaranteed. Failed stages are not skipped or filled with
+fabricated TS; the recorded I/Q and any successfully
+generated intermediates remain useful for fixing the code.
+
+For a shorter CPU diagnostic, use
+`--max-ofdm-symbols 1020`, but this cannot extract more
+than the tested 1020 OFDM rows per capture. Upload the
+**manifest and the complete contents of one capture folder**
+from the extraction bundle when investigating RS sync,
+TMCC failures or missing PAT/PMT. If ZIP size is an
+issue, first share `extract_manifest.json`,
+`tmcc.json`, `quality.json`, `deinterleaved.npz`
+and `partial.ts` + `.ts.json`, then
+the large `iq.c64` and adjacent `.c64.json`
+only for captures whose DSP failure needs a waveform.
