@@ -638,9 +638,16 @@ class MainWindow(QMainWindow):
 
     def _survey_succeeded(self, report: dict):
         self.latest_log_path = Path(report["log_jsonl"])
+        exported = report.get("diagnostic_zip")
+        self.latest_bundle_path = Path(exported) if exported else None
         self.log_label.setText(
+            f"Automatic gain survey diagnostic ZIP: {exported}. "
+            "Includes full JSON/JSONL and up to two actual RF windows. "
+            "Nothing was uploaded."
+            if exported else
             f"Gain survey JSON: {report['report_json']} | "
-            f"full JSONL: {report['log_jsonl']}"
+            f"full JSONL: {report['log_jsonl']}; "
+            f"ZIP error: {report.get('diagnostic_zip_error')}"
         )
         self.copy_log_btn.setEnabled(True)
         suggested = report["promising_gain_for_manual_retest_db"]
@@ -654,7 +661,9 @@ class MainWindow(QMainWindow):
             f"{label}. No live TV lock inferred."
         )
         self.status.setText(
-            f"Auto gain report saved: {report['report_json']}"
+            "Auto gain diagnostics ZIP saved: " + exported
+            if exported else
+            f"Auto gain JSON saved: {report['report_json']}; ZIP unavailable"
         )
 
     def _survey_failed(self, error: str):
