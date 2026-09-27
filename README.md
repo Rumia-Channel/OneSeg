@@ -669,3 +669,42 @@ actual Windows 11/FC0013 machine. If decoder time still exceeds 3
 seconds, the next priority is a persistent streaming pipeline
 preserving FFT timing, deinterleaver, Viterbi, PRBS and TS/PES state
 rather than simply increasing queue sizes or making up PSI packets.
+
+
+## Live trial 3: -9.9 dB gain removed overload but no validated TMCC (2026-09-27)
+
+On 20ch / 515.142857 MHz / 0 ppm, the FC0013 was tested at
+manual RF gain **-9.9 dB**. The GUI reported **0.12%** full-scale
+occupancy, zero recovered RS-verified TS packets, two failed windows,
+and no parity-verified TMCC. USB acquisition took ~3.03 seconds
+per 3-second window, and the latest decoder returned after
+~0.96 seconds. This is NOT proof that full TS demodulation
+can sustain 3 seconds: it ended early when TMCC failed, before
+deinterleaving, Viterbi and Reed–Solomon.
+
+The last 0-dB attempt had >5% full scale and sporadic real
+TS packets. A gain between -9.9 and 0 dB is worth testing,
+starting at **-5.0 dB** (pyrtlsdr/librtlsdr may round
+to a supported FC0013 gain step). If there is still no TMCC,
+try another step, documenting RMS/CP/pilot scores rather than
+choosing gain on exact-fullscale occupancy alone. RF clipping
+is a useful limit, NOT a signal-strength or BER meter; 0.12%
+clipping alone does not prove the signal is too weak.
+
+**Added failure diagnostics:** live and `oneseg-decode` now
+preserve and display CP quality, pilot coherence, I/Q RMS,
+full-scale occupancy and 16-bit TMCC sync candidate counts
+even if zero protected TMCC frames pass. The GUI lists the
+OFDM/PRBS/RS stage timings only for full decode success.
+This separates weak/unstable OFDM, incorrect pilot alignment,
+and decode/CPU problems without falsely claiming a playable
+TV service.
+
+Next Windows test: close OneSeg and other RTL programs,
+`git pull`, `uv sync`, `uv run oneseg`;
+20ch, manual -5.0 dB, 0 ppm, automatic OFF;
+press `Watch 1seg LIVE (experimental)` directly.
+Share the new CP / pilots / RMS / clipping / USB/DSP
+numbers and whether any authenticated TS packets, PAT/PMT
+and real video frames appear. The 3-second windows still
+have state resets and are not continuous television.
