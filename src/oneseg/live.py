@@ -27,6 +27,7 @@ from .dsp import DEFAULT_SAMPLE_RATE
 from .ppm import PpmCorrection
 from .gain_control import set_discrete_manual_gain
 from .telemetry import SessionTelemetry, check_window
+from .diagnostic_bundle import DiagnosticBundle
 
 
 class LiveTsBuffer(RawIOBase):
@@ -107,6 +108,7 @@ class ExperimentalLiveReceiver(QThread):
     transport = Signal(bytes)
     progress = Signal(object)
     log_ready = Signal(str)
+    bundle_ready = Signal(str)
 
     def __init__(
         self,
@@ -138,6 +140,7 @@ class ExperimentalLiveReceiver(QThread):
         self.stop_event = Event()
         self.telemetry: SessionTelemetry | None = None
         self.log_path: Path | None = None
+        self.bundle_path: Path | None = None
 
     def stop(self):
         self.stop_event.set()
@@ -155,11 +158,15 @@ class ExperimentalLiveReceiver(QThread):
         decoder: Thread | None = None
         temporary: TemporaryDirectory | None = None
         capture_timings: dict[Path, float] = {}
+        bundle: DiagnosticBundle | None = None
 
         try:
             self.telemetry = SessionTelemetry()
             self.log_path = self.telemetry.path
             self.log_ready.emit(str(self.log_path))
+            # Automatically retain at most one failed and one successful
+            # real raw-IQ window, rather than asking for screenshots.
+            bundle = DiagnosticBundle(self.log_path)
             self.record_event(
                 "session_start",
                 center_frequency_hz=self.frequency_hz,
@@ -279,6 +286,24 @@ class ExperimentalLiveReceiver(QThread):
                                 metrics=metrics, checks=check_window(metrics),
                             )
                             self.progress.emit(metrics)
+                            if bundle is not None and result[
+                                "rs_and_ts_accepted_packets"
+                            ] > 0:
+                                saved = bundle.save_example(
+                                    "first_success", item,
+                                    window=window_number,
+                                    metrics={
+                                        **metrics,
+                                        "center_frequency_hz": self.frequency_hz,
+                                        "ppm": self.ppm,
+                                    },
+                                    ts=target,
+                                )
+                                if saved is not None:
+                                    self.record_event(
+                                        "diagnostic_example_saved",
+                                        window=window_number, **saved,
+                                    )
                             self.transport.emit(data)
                             self.status.emit(
                                 f"LIVE EXPERIMENT: {decoded} genuine TS packets; "
@@ -344,6 +369,21 @@ class ExperimentalLiveReceiver(QThread):
                             metrics=metrics, checks=check_window(metrics),
                         )
                         self.progress.emit(metrics)
+                        if bundle is not None and item.is_file():
+                            saved = bundle.save_example(
+                                "first_failure", item,
+                                window=window_number,
+                                metrics={
+                                    **metrics,
+                                    "center_frequency_hz": self.frequency_hz,
+                                    "ppm": self.ppm,
+                                },
+                            )
+                            if saved is not None:
+                                self.record_event(
+                                    "diagnostic_example_saved",
+                                    window=window_number, **saved,
+                                )
                         self.status.emit(
                             f"Live window rejected ({type(exc).__name__}: {exc}); "
                             "continuing RF reads; no fake TS packets."
@@ -523,6 +563,16 @@ class ExperimentalLiveReceiver(QThread):
                         f"Diagnostic log write error: {self.telemetry.error}"
                     )
                 self.telemetry = None
+            if bundle is not None:
+                try:
+                    self.bundle_path = bundle.finish()
+                except Exception as exc:
+                    self.status.emit(
+                        "Diagnostic bundle export failed; JSONL and "
+                        f"loose examples retained: {type(exc).__name__}: {exc}"
+                    )
+                else:
+                    self.bundle_ready.emit(str(self.bundle_path))
             self.status.emit(
                 f"Experimental live session ended: {decoded} "
                 "real TS packets; NOT a confirmed gapless TV receiver."
