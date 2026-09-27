@@ -136,3 +136,54 @@ def test_live_thread_pipeline_with_fake_usb_and_real_decoding_boundary(
     assert capture_count[0] == 2
     assert not created[0].exists()  # temp raw bytes deleted after decode join
     assert not created[0].with_suffix(".c64").exists()
+
+
+
+def test_fc0013_actual_gain_readback_is_not_requested_float(monkeypatch):
+    from oneseg.continuous import CaptureCancelled
+
+    class GainAwareFake:
+        valid_gains_db = [-9.9, -7.3, -6.5, -6.3, -6.0, -5.8, -5.4, 5.8]
+
+        def __init__(self):
+            self._gain = 0.0
+            self.sample_rate = None
+            self.center_freq = None
+            self.freq_correction = 0
+            self.closed = False
+
+        @property
+        def gain(self):
+            return self._gain
+
+        @gain.setter
+        def gain(self, requested):
+            self._gain = min(
+                self.valid_gains_db,
+                key=lambda possible: abs(possible - requested),
+            )
+
+        def close(self):
+            self.closed = True
+
+    device = GainAwareFake()
+    status = []
+
+    def cancel_after_gain(dev, path, *, samples_required, warmup_buffers, cancelled):
+        assert dev.gain == -5.4
+        raise CaptureCancelled("only testing actual gain readback")
+
+    monkeypatch.setattr(
+        "oneseg.live.record_raw_window", cancel_after_gain
+    )
+    receiver = ExperimentalLiveReceiver(
+        frequency_hz=515142857, ppm=0, gain=-5.0,
+        device_factory=lambda: device,
+    )
+    receiver.status.connect(status.append)
+    receiver.run()
+    assert receiver.gain == -5.0
+    assert receiver.applied_gain_db == -5.4
+    assert -7.3 in receiver.available_low_gains_db
+    assert any("requested gain -5, applied -5.4 dB" in x for x in status)
+    assert device.closed
