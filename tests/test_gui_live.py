@@ -151,5 +151,6 @@ def test_gui_exposes_copyable_live_log_path_and_automatic_gain_survey(
     assert "No gain met" in window.live_metrics.text()
     window._survey_finished()
     assert window.survey is None
+    window.auto_gain.setChecked(False)
     assert window.live_btn.isEnabled()
     window.close()
