@@ -25,6 +25,7 @@ from .raw_capture import record_raw_window, expand_raw_to_c64, raw_fullscale_per
 from .decode import decode_capture
 from .dsp import DEFAULT_SAMPLE_RATE
 from .ppm import PpmCorrection
+from .gain_control import set_discrete_manual_gain
 from .telemetry import SessionTelemetry, check_window
 
 
@@ -198,6 +199,10 @@ class ExperimentalLiveReceiver(QThread):
                                     "center_frequency_hz": self.frequency_hz,
                                     "gain_db": self.applied_gain_db,
                                     "gain_requested_db": self.gain,
+                                    "gain_readback_db": selection["gain_readback_db"],
+                                    "gain_readback_matches_command": selection[
+                                        "gain_readback_matches_command"
+                                    ],
                                     "ppm": self.ppm,
                                 },
                             )
@@ -223,6 +228,10 @@ class ExperimentalLiveReceiver(QThread):
                                 "fullscale_percent": raw_clipping,
                                 "requested_gain_db": self.gain,
                                 "applied_gain_db": self.applied_gain_db,
+                                "gain_readback_db": selection["gain_readback_db"],
+                                "gain_readback_matches_command": selection[
+                                    "gain_readback_matches_command"
+                                ],
                                 "available_low_gains_db": self.available_low_gains_db,
                                 "rms": result.get("input_rms"),
                                 "cp_quality": result.get("input_cp_quality"),
@@ -290,6 +299,13 @@ class ExperimentalLiveReceiver(QThread):
                                 raw_clipping is not None and raw_clipping > 5.0
                             ),
                             "fullscale_percent": raw_clipping,
+                            "requested_gain_db": self.gain,
+                            "applied_gain_db": self.applied_gain_db,
+                            "gain_readback_db": selection["gain_readback_db"],
+                            "gain_readback_matches_command": selection[
+                                "gain_readback_matches_command"
+                            ],
+                            "available_low_gains_db": self.available_low_gains_db,
                             "rms": details.get("iq_rms"),
                             "cp_quality": details.get("cp_quality"),
                             "pilot_coherence": details.get(
@@ -367,35 +383,38 @@ class ExperimentalLiveReceiver(QThread):
             device.sample_rate = DEFAULT_SAMPLE_RATE
             PpmCorrection().apply(device, self.ppm)
             device.center_freq = self.frequency_hz
-            device.gain = self.gain
             supported = [
                 float(v) for v in getattr(device, "valid_gains_db", [])
             ]
             self.available_low_gains_db = sorted({
                 v for v in supported if v <= 0
             })
-            selected = (
-                min(supported, key=lambda v: abs(v - self.gain))
-                if supported else self.gain
+            selection = set_discrete_manual_gain(
+                device, self.gain, supported=supported
             )
-            # Reading back the selected tuner gain is safe here, before
-            # beginning synchronous USB samples. Fall back to pyrtlsdr's
-            # documented nearest-supported-gain selection if unavailable.
-            try:
-                self.applied_gain_db = float(device.gain)
-            except (AttributeError, TypeError, ValueError):
-                self.applied_gain_db = selected
+            self.applied_gain_db = selection["commanded_gain_db"]
             self.record_event(
                 "tuner_opened", requested_gain_db=self.gain,
                 applied_gain_db=self.applied_gain_db,
+                commanded_gain_db=self.applied_gain_db,
+                gain_readback_db=selection["gain_readback_db"],
+                gain_readback_matches_command=selection[
+                    "gain_readback_matches_command"
+                ],
                 supported_low_gains_db=self.available_low_gains_db,
                 center_frequency_hz=self.frequency_hz,
             )
             self.status.emit(
                 f"EXPERIMENTAL live 1seg: {self.frequency_hz/1e6:.6f} MHz; "
                 f"requested gain {self.gain:g}, "
-                f"applied {self.applied_gain_db:g} dB. "
-                f"Supported low gains: {self.available_low_gains_db}. "
+                f"commanded {self.applied_gain_db:g} dB, "
+                f"getter readback {selection['gain_readback_db']} dB"
+                + (
+                    " (getter mismatch; command kept)"
+                    if not selection["gain_readback_matches_command"]
+                    else ""
+                )
+                + f". Supported low gains: {self.available_low_gains_db}. "
                 f"Buffering {self.chunk_seconds:g}s I/Q; "
                 "video continuity NOT guaranteed."
             )
