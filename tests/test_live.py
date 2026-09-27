@@ -201,5 +201,5 @@ def test_fc0013_actual_gain_readback_is_not_requested_float(monkeypatch):
     assert receiver.gain == -5.0
     assert receiver.applied_gain_db == -5.4
     assert -7.3 in receiver.available_low_gains_db
-    assert any("requested gain -5, applied -5.4 dB" in x for x in status)
+    assert any("requested gain -5, commanded -5.4 dB" in x for x in status)
     assert device.closed
