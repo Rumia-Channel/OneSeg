@@ -90,6 +90,18 @@ def test_requires_report_matching_fixture_and_safe_output(tmp_path):
         assert done["qpsk_hard_bits"].shape == (summary["output_bit_count"],)
     with pytest.raises(FileExistsError):
         process_fixture(npz, report, output)
+    # Live's disposable uncompressed NPZ preserves the exact hard bits
+    # and soft metrics produced by the manually exported compressed NPZ.
+    import zipfile
+    fast_path = tmp_path / "fast.npz"
+    fast_summary = process_fixture(npz, report, fast_path, compress=False)
+    assert fast_summary["output_bit_count"] == summary["output_bit_count"]
+    with zipfile.ZipFile(fast_path) as z:
+        assert all(info.compress_type == zipfile.ZIP_STORED for info in z.infolist())
+    with np.load(output, allow_pickle=False) as standard:
+        with np.load(fast_path, allow_pickle=False) as fast:
+            for key in standard.files:
+                np.testing.assert_array_equal(standard[key], fast[key])
 
 
 def test_metadata_mismatch_is_rejected(tmp_path):
