@@ -286,7 +286,7 @@ def run_gain_survey(
                             f"RS TS {measurement.get('accepted_chunk') or 0}"
                         )
             groups = []
-            for gain in requested:
+            for gain in sorted(set(r["applied_gain_db"] for r in results)):
                 rows = [
                     r for r in results if r["applied_gain_db"] == gain
                 ]
