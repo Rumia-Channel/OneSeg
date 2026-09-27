@@ -302,7 +302,7 @@ class ExperimentalLiveReceiver(QThread):
                                 if saved is not None:
                                     self.record_event(
                                         "diagnostic_example_saved",
-                                        window=window_number, **saved,
+                                        window=window_number, example=saved,
                                     )
                             self.transport.emit(data)
                             self.status.emit(
@@ -382,7 +382,7 @@ class ExperimentalLiveReceiver(QThread):
                             if saved is not None:
                                 self.record_event(
                                     "diagnostic_example_saved",
-                                    window=window_number, **saved,
+                                    window=window_number, example=saved,
                                 )
                         self.status.emit(
                             f"Live window rejected ({type(exc).__name__}: {exc}); "
