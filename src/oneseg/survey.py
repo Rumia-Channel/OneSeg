@@ -25,6 +25,7 @@ from .decode import decode_capture
 from .dsp import DEFAULT_SAMPLE_RATE
 from .pilots import analyze_capture
 from .ppm import PpmCorrection
+from .gain_control import set_discrete_manual_gain
 from .raw_capture import (
     expand_raw_to_c64, raw_fullscale_percent, record_raw_window,
 )
@@ -148,11 +149,18 @@ def run_gain_survey(
             for gain in requested:
                 if cancelled():
                     break
-                device.gain = gain  # only tuner-owning thread sets gain
-                try:
-                    applied = float(device.gain)
-                except (TypeError, ValueError, AttributeError):
-                    applied = gain
+                selection = set_discrete_manual_gain(
+                    device, gain, supported=supported
+                )  # only tuner-owning thread sets gain
+                applied = selection["commanded_gain_db"]
+                log.emit(
+                    "gain_command", gain_requested_db=gain,
+                    commanded_gain_db=applied,
+                    gain_readback_db=selection["gain_readback_db"],
+                    gain_readback_matches_command=selection[
+                        "gain_readback_matches_command"
+                    ],
+                )
                 for trial in range(repeats):
                     if cancelled():
                         break
@@ -164,6 +172,13 @@ def run_gain_survey(
                         "window_seconds": seconds,
                         "gain_requested_db": gain,
                         "applied_gain_db": applied,
+                        "commanded_gain_db": applied,
+                        "gain_readback_db": selection["gain_readback_db"],
+                        "gain_readback_matches_command": selection[
+                            "gain_readback_matches_command"
+                        ],
+                        "gain_value_source": selection["gain_value_source"],
+                        "actual_analog_gain_independently_verified": False,
                         "trial": trial + 1,
                         "accepted_chunk": None,
                         "has_pat": None,
@@ -298,6 +313,8 @@ def run_gain_survey(
                 ]
                 groups.append({
                     "applied_gain_db": gain,
+                    "gain_value_source":
+                        "nearest_supported_setter_accepted",
                     "windows": len(rows),
                     "verified_tmcc_frames": sum(
                         r.get("tmcc_parity_verified_frames") or 0
@@ -327,6 +344,13 @@ def run_gain_survey(
                 "seconds_per_window": seconds,
                 "repeats": repeats,
                 "gains_advertised_db": supported,
+                "applied_gain_db_definition":
+                    "nearest advertised commanded step accepted by setter; "
+                    "not independently calibrated analog gain",
+                "gain_readback_mismatch_count": sum(
+                    not row["gain_readback_matches_command"]
+                    for row in results
+                ),
                 "log_jsonl": str(log.path),
                 "report_json": str(output),
                 "windows": results,
