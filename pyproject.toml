@@ -29,6 +29,8 @@ oneseg-pilots = "oneseg.pilots:main"
 oneseg-deinterleave = "oneseg.deinterleave:main"
 oneseg-recover = "oneseg.recover:main"
 oneseg-decode = "oneseg.decode:main"
+oneseg-report = "oneseg.report_cli:main"
+oneseg-survey = "oneseg.survey:main"
 
 [build-system]
 requires = ["hatchling"]
