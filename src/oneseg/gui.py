@@ -625,6 +625,16 @@ class MainWindow(QMainWindow):
             if percent is not None else "full-scale unknown"
         )
         failure = report.get("failure_reason")
+        requested_gain = report.get("requested_gain_db")
+        applied_gain = report.get("applied_gain_db")
+        gain_evidence = (
+            f" RF gain requested {requested_gain:g} / "
+            f"applied {applied_gain:g} dB "
+            f"(FC0013 lower steps "
+            f"{report.get('available_low_gains_db', [])})."
+            if requested_gain is not None and applied_gain is not None
+            else ""
+        )
         cp = report.get("cp_quality")
         pilots = report.get("pilot_coherence")
         rms = report.get("rms")
@@ -659,6 +669,7 @@ class MainWindow(QMainWindow):
             f"DSP {report.get('decoder_window_seconds')}s per 3 s window; "
             f"pending {report.get('queued_windows')} windows. "
             "Window discontinuities remain."
+            + gain_evidence
             + signal_evidence
             + breakdown
             + (f" Latest window FAILED: {failure}" if failure else "")
@@ -667,8 +678,9 @@ class MainWindow(QMainWindow):
             self.video.setText(
                 f"Last LIVE window failed: {failure}. "
                 + (
-                    "Input overloaded: Stop LIVE and try -9.9 dB "
-                    "manual gain, then compare real packet counts."
+                    "Input overloaded: Stop LIVE and try an actual "
+                    "FC0013 -7.3 dB step. Compare CP/pilots/RMS; "
+                    "previous -9.9 dB also failed TMCC."
                     if report["overloaded"] else
                     "Check 20ch RF, OFDM and decoder timings."
                 )
@@ -680,7 +692,7 @@ class MainWindow(QMainWindow):
             self.video.setText(
                 f"Experimental live: {report['accepted_total']} RS-verified TS "
                 "packets, but I/Q ADC clipping >5%. Stop LIVE; "
-                "try -9.9 dB manual gain. Video playback not yet verified."
+                "try FC0013 -7.3 dB manual gain. Video not yet verified."
             )
         else:
             self.video.setText(
