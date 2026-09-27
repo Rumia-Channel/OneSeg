@@ -124,6 +124,12 @@ def test_gui_exposes_copyable_live_log_path_and_automatic_gain_survey(
     assert str(path) in window.log_label.text()
     window._copy_log_path()
     assert app.clipboard().text() == str(path)
+    archive = tmp_path / "oneseg_live_2026.diagnostics.zip"
+    window._live_bundle_ready(str(archive))
+    assert str(archive) in window.log_label.text()
+    window._copy_log_path()
+    assert app.clipboard().text() == str(archive)
+    assert "nothing was uploaded" in window.log_label.text()
 
     monkeypatch.setattr(
         QMessageBox, "question",
