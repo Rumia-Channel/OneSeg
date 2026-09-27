@@ -1004,3 +1004,30 @@ After `git pull` / `uv sync`, start `uv run oneseg`, perform a live
 20ch test, press Stop and send the ZIP instead of another screenshot.
 Automated evidence collection does NOT itself fix the existing
 3-second receiver-state discontinuities or guarantee live TV playback.
+
+
+## Automatic gain-survey ZIP (2026-09-27 follow-up)
+
+The preceding live-only ZIP feature did NOT apply to the **Automatic gain survey**
+button or `oneseg-gain-survey`: that separate code path produced `.survey.json`
+and `.jsonl` only and immediately deleted its temporary I/Q and TS. A real
+14-window 20ch FC0013 survey exposed this gap. The original samples
+from that earlier survey cannot be reconstructed from the JSON or JSONL.
+
+Now the gain survey ALSO writes a local `.diagnostics.zip` automatically
+after the tuner closes and the JSONL is flushed. The archive contains:
+`survey.json` (ALL gains/trials), `session.jsonl`, `report.json`,
+up to ONE actual first failed and ONE actual first successful raw 8-bit
+I/Q window and, if generated, its authentic RS-verified partial `.ts`.
+Other windows remain represented by full JSON metrics. The raw-IQ
+selection/copy happens after USB capture, before per-window cleanup;
+two 3s I/Q examples occupy at most about 24.6 MB. A session with
+only failures or successes may retain just one example.
+
+The GUI displays the new diagnostic ZIP and copies its path when
+`Copy live diagnostic file path` is clicked after the survey finishes.
+The command-line tool prints the same shareable ZIP path, and the
+full `.survey.json` has `diagnostic_zip` and `log_jsonl` fields.
+If ZIP export fails, it reports `diagnostic_zip_error` and preserves
+the JSONL and any loose I/Q evidence rather than asserting success.
+There is no automatic network upload or guarantee of continuous TV.
