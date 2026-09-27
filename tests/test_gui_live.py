@@ -148,12 +148,17 @@ def test_gui_exposes_copyable_live_log_path_and_automatic_gain_survey(
     assert not window.live_btn.isEnabled()
     assert not window.start_btn.isEnabled()
     assert window.survey_btn.text() == "Stop automatic gain survey"
+    survey_zip = tmp_path / "survey.diagnostics.zip"
     window._survey_succeeded({
         "windows": [{}, {}],
         "promising_gain_for_manual_retest_db": None,
         "report_json": str(tmp_path / "report.json"),
         "log_jsonl": str(path),
+        "diagnostic_zip": str(survey_zip),
     })
+    assert str(survey_zip) in window.log_label.text()
+    window._copy_log_path()
+    assert app.clipboard().text() == str(survey_zip)
     assert "No gain met" in window.live_metrics.text()
     window._survey_finished()
     assert window.survey is None
