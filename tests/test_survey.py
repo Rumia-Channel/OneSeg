@@ -123,3 +123,81 @@ def test_gain_survey_rejects_invalid_levels_and_does_not_touch_usb(tmp_path):
         run_gain_survey(gains=[1], device_factory=fake_device,
                         log_directory=tmp_path)
     assert not calls
+
+
+
+def test_real_fc0013_zero_gain_getter_does_not_collapse_gain_groups(
+    tmp_path, monkeypatch,
+):
+    """Regression for 2026-09-27 uploaded 14-window report.
+
+    librtlsdr's gain getter returned 0.0 for every negative tuner step,
+    although I/Q RMS and clipping varied with each accepted setter.
+    """
+    class ZeroGetterDevice:
+        valid_gains_db = [-9.9, -7.3, 5.8]
+
+        def __init__(self):
+            self.commanded = None
+            self.sample_rate = None
+            self.center_freq = None
+            self.freq_correction = 0
+            self.closed = False
+
+        @property
+        def gain(self):
+            return 0.0
+
+        @gain.setter
+        def gain(self, value):
+            self.commanded = value
+
+        def close(self):
+            self.closed = True
+
+    device = ZeroGetterDevice()
+
+    def raw_capture(dev, target, *, samples_required, cancelled, warmup_buffers):
+        assert dev is device
+        assert dev.commanded in (-9.9, -7.3)
+        target.write_bytes(bytes((128, 129)) * 64)
+
+    def expand(raw, dest, *, metadata):
+        assert metadata["gain_db"] == device.commanded
+        dest.write_bytes(bytes(8))
+        dest.with_suffix(".c64.json").write_text("{}")
+        return {}
+
+    def probe(dest, *, seconds):
+        return {
+            "cp_quality": .98,
+            "pilot_coherence": .97,
+            "iq_rms": .23,
+            "bch_parity_verified_frames": [{"syndrome": 0}],
+        }
+
+    def decode(dest, output, *, seconds, max_ofdm_symbols):
+        return {
+            "rs_and_ts_accepted_packets": 150 if device.commanded == -9.9 else 20,
+            "rejected_rs_or_invalid_ts_packets": 0,
+            "pat_programs": {},
+            "pmt_elementary_streams": {},
+        }
+
+    monkeypatch.setattr("oneseg.survey.record_raw_window", raw_capture)
+    monkeypatch.setattr("oneseg.survey.expand_raw_to_c64", expand)
+    report = run_gain_survey(
+        channel=20, seconds=1, repeats=2, gains=[-9.9, -7.3],
+        output=tmp_path / "summary.json", log_directory=tmp_path,
+        device_factory=lambda: device,
+        probe_function=probe, decode_function=decode,
+    )
+    assert device.closed
+    assert [g["applied_gain_db"] for g in report["by_gain"]] == [-9.9, -7.3]
+    assert [g["rs_packets"] for g in report["by_gain"]] == [300, 40]
+    assert report["promising_gain_for_manual_retest_db"] == -9.9
+    assert report["gain_readback_mismatch_count"] == 4
+    assert all(x["gain_readback_db"] == 0.0 for x in report["windows"])
+    assert all(not x["gain_readback_matches_command"] for x in report["windows"])
+    assert all(x["applied_gain_db"] == x["gain_requested_db"]
+               for x in report["windows"])
