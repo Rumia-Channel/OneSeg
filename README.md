@@ -708,3 +708,53 @@ Share the new CP / pilots / RMS / clipping / USB/DSP
 numbers and whether any authenticated TS packets, PAT/PMT
 and real video frames appear. The 3-second windows still
 have state resets and are not continuous television.
+
+
+## Live trial 4: pilot lock strong but TMCC data damaged at -5.0 dB
+
+The Windows 11 FC0013 20ch screenshot at requested -5.0 dB
+(515.142857 MHz / 0 ppm) showed real TS packets earlier in
+the session but the last 3-second window had **CP=0.947**,
+**pilot coherence=0.947**, **RMS=0.6816**, **8.88%
+full-scale** and **18 individual 16-bit TMCC sync
+candidates with zero 204-spaced pairs**.
+It failed the 82-bit protected TMCC parity check, correctly
+refusing to output imagined MPEG-TS for that window.
+Earlier 0-dB and -5-dB settings were both overloaded,
+while -9.9 dB had only 0.12% exact-full-scale
+occupancy and no authenticated TS on the earlier
+two-window trial. These are different recordings,
+not a calibrated RF-input threshold.
+
+The osmocom FC0013 tuner implements **discrete** negative
+LNA gain choices: -9.9, -7.3, -6.5, -6.3,
+-6.0, -5.8 and -5.4 dB (followed by a jump
+to positive gain). pyrtlsdr **rounds the requested gain
+to the nearest hardware-supported setting**; requesting
+-5.0 dB normally selects -5.4 dB. See
+[rtl-sdr FC0013 driver](https://github.com/osmocom/rtl-sdr/blob/master/src/tuner_fc0013.c)
+and [pyrtlsdr gain selection](https://github.com/pyrtlsdr/pyrtlsdr/blob/master/rtlsdr/rtlsdr.py).
+The LIVE status now reports both requested and actual
+readback gains and prints the tuner's supported nonpositive
+values. An appropriate next controlled experiment
+is actual **-7.3 dB** (not an arbitrary -5.0 slider
+setting); use -6.5 dB only if further gain is warranted
+by the new RMS/CP/pilot/clip/TS measurements.
+
+There are **four redundant TMCC carriers** in the central
+Mode-3 segment. In addition to averaging their
+DBPSK confidence, OneSeg now attempts the protected
+16-bit sync + 82-bit cyclic parity test **separately
+on each carrier**, then selects the stream with the
+most consecutive zero-syndrome frames, preferring
+the original combined stream on equal results.
+This can rescue a frame if one carrier is usable
+and the others are damaged by selective interference.
+It cannot correct widespread ADC clipping, lost
+OFDM symbols or bit errors without parity passing.
+The JSON report records `tmcc_soft_source` and
+`tmcc_per_carrier_verified_counts`; zero-syndrome
+protection remains mandatory for TS extraction.
+The 3-second-window live pipeline is still
+experimental, discontinuous and not yet
+verified rendering continuous broadcast video/audio.
