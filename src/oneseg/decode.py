@@ -18,6 +18,34 @@ from .pilots import analyze_capture
 from .recover import recover_file
 
 
+class UnverifiedTmccError(ValueError):
+    """Cannot infer Layer-A bits if no protected TMCC frame was recovered."""
+
+    def __init__(self, report: dict):
+        self.diagnostics = {
+            "cp_quality": report.get("cp_quality"),
+            "pilot_coherence": report.get("pilot_coherence"),
+            "iq_rms": report.get("iq_rms"),
+            "iq_fullscale_percent": report.get("iq_fullscale_percent"),
+            "single_sync_candidates": report.get("single_sync_candidates"),
+            "repeated_sync_candidates": len(
+                report.get("repeated_sync_candidates", [])
+            ),
+            "gain_db": report.get("gain_db"),
+        }
+        diag = self.diagnostics
+        super().__init__(
+            "no parity-verified TMCC frames; "
+            f"CP {diag['cp_quality']:.3f}, "
+            f"pilots {diag['pilot_coherence']:.3f}, "
+            f"I/Q RMS {diag['iq_rms']:.4f}, "
+            f"full-scale {diag['iq_fullscale_percent']:.2f}%, "
+            f"sync candidates {diag['single_sync_candidates']} "
+            f"(repeated {diag['repeated_sync_candidates']}); "
+            "no MPEG-TS produced"
+        )
+
+
 def decode_capture(
     capture: Path,
     output: Path,
@@ -63,9 +91,7 @@ def decode_capture(
         after_pilots = perf_counter()
         frames = report["bch_parity_verified_frames"]
         if not frames:
-            raise ValueError(
-                "no parity-verified TMCC frames; refusing to decode assumed TV"
-            )
+            raise UnverifiedTmccError(report)
         tmcc_path.write_text(
             json.dumps(report, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -106,6 +132,9 @@ def decode_capture(
             "tmcc_parity_verified_frames": len(frames),
             "layer_a": frames[0]["layer_A"],
             "input_fullscale_percent": report["iq_fullscale_percent"],
+            "input_rms": report["iq_rms"],
+            "input_cp_quality": report["cp_quality"],
+            "input_pilot_coherence": report["pilot_coherence"],
             "input_overload_warning": report["iq_overload_warning"],
             "intermediate_npz_files_retained": False,
             "not_live_reception": True,
