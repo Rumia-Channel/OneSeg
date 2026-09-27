@@ -758,3 +758,91 @@ protection remains mandatory for TS extraction.
 The 3-second-window live pipeline is still
 experimental, discontinuous and not yet
 verified rendering continuous broadcast video/audio.
+
+
+## Persistent live diagnostics and automatic FC0013 gain survey (2026-09-27)
+
+The previous -7.3 dB live test showed **112 real RS-verified TS
+packets over the session**, then a later 3-second window failed
+TMCC parity with **CP .953, pilot coherence .953, I/Q RMS .5432,
+1.96% full-scale hits**, eight single sync candidates and
+zero repeated sync pairs. PAT/PMT and video still were not
+recovered. Screenshots display only the *latest* update; this is
+insufficient for analyzing changing RF and transport errors.
+
+**Every experimental LIVE launch now creates a persistent metadata
+log automatically**, saved to:
+
+```text
+%USERPROFILE%\OneSeg\logs\oneseg_live_<UTC timestamp>_<unique id>.jsonl
+```
+
+The GUI displays the full path beneath LIVE metrics and offers
+`Copy latest diagnostic log path`. JSONL is one independently flushed
+JSON object per event and retains earlier results if a future native
+USB crash interrupts the last record. Logging is handled by a bounded,
+separate writer thread: no raw I/Q, TS bytes or JSON serialization
+are performed inside the timing-sensitive USB capture loop.
+Logs contain session configuration, actual tuner gain, all successful
+and rejected 3-second windows, raw I/Q full-scale %, I/Q RMS,
+CP / pilot coherence, integer/fractional frequency offset,
+per-carrier and aggregate TMCC validation, actual RS-verified
+188-byte MPEG-TS counts, rejected blocks, PAT/PMT and PID
+counts, PSI availability, Viterbi/RS stage durations,
+DSP/USB queue/backlog and failed windows. First and periodic
+real rendered video frames and player errors are also recorded.
+A pass/warn/fail/unknown result accompanies each pipeline
+stage; **unknown is not a pass**. A pilot correlation peak, RF
+power or a 0x47 byte alone is not recorded as successful television.
+
+To summarize a full LIVE log without needing the USB receiver:
+
+```powershell
+uv run oneseg-report "C:\Users\rumia\OneSeg\logs\oneseg_live_<session>.jsonl" --json live_summary.json
+```
+
+Replace the illustrative path with the *actual path copied from
+the GUI*. The raw `.jsonl` contains more evidence than its summary
+and can be uploaded directly for debugging.
+
+**Automatic gain/quality checks in the same GUI:** stop LIVE
+and all other SDR applications; select 1seg mode and 20ch;
+click `Auto check RF gains + log…` and confirm. The exclusive
+diagnostic worker checks the FC0013's *advertised actual*
+nonpositive gain steps (typically -9.9, -7.3, -6.5,
+-6.3, -6.0, -5.8, -5.4 dB; actual list comes from
+the attached tuner) with **two independent 3-second windows
+per gain**. For each window it automatically measures
+ADC clipping, OFDM CP, pilot coherence, protected TMCC
+and, when TMCC passes, real rate-2/3 Viterbi/RS/TS recovery
+plus PAT/PMT. One gain is identified as a possible *manual
+retest* candidate **only if it passes genuine RS recovery in
+at least two windows, with at least two parity-verified TMCC
+frames and no >=5% full-scale window**. If none qualifies,
+the result explicitly says so; it never equates RF signal
+strength with TV lock or silently changes a running live
+session's gain. The survey can take several minutes and
+cannot run concurrently with the normal receiver.
+
+CLI alternative (no GUI, same safe synchronous USB reads;
+close SDR++ and other OneSeg sessions):
+
+```powershell
+git pull
+uv sync
+uv run oneseg-survey --channel 20 --ppm 0 --seconds 3 --repeats 2
+```
+
+The CLI prints the paths to both a full JSONL event log
+and a structured survey JSON report under
+`%USERPROFILE%\OneSeg\logs`. You can restrict the
+tested gain steps using
+`--gains=-9.9,-7.3,-6.5,-6.3,-6.0,-5.8,-5.4`.
+No raw recording or partial TS is preserved by the
+survey; the existing standalone `oneseg-capture`
+remains available if a waveform needs detailed analysis.
+
+This adds reproducible RF/DSP observability and an automated
+**diagnostic measurement process**, not a confirmed continuous
+streaming one-seg decoder: the existing 3-second window
+resets and missing PAT/PMT/PES are not fixed by these logs.
