@@ -24,6 +24,9 @@ def test_end_to_end_orchestration_without_usb_or_fake_ts(tmp_path, monkeypatch):
             }],
             "mode_assumed":3, "guard_assumed":"1/8",
             "iq_fullscale_percent": 11.3,
+            "iq_rms": 0.5,
+            "cp_quality": 0.98,
+            "pilot_coherence": 0.95,
             "iq_overload_warning": True,
         }
 
@@ -64,6 +67,36 @@ def test_end_to_end_orchestration_without_usb_or_fake_ts(tmp_path, monkeypatch):
     assert len(messages) == 4
     with pytest.raises(FileExistsError):
         decode_capture(cap, output)
+
+
+def test_tmcc_failure_carries_quantified_signal_evidence(tmp_path, monkeypatch):
+    from oneseg.decode import UnverifiedTmccError
+
+    source = tmp_path / "weak.c64"
+    source.write_bytes(bytes(8))
+    source.with_suffix(".c64.json").write_text("{}")
+
+    def no_tmcc(source, *, seconds, layer_a_output, compress_fixture):
+        return {
+            "bch_parity_verified_frames": [],
+            "cp_quality": 0.91,
+            "pilot_coherence": 0.34,
+            "iq_rms": 0.014,
+            "iq_fullscale_percent": 0.12,
+            "single_sync_candidates": 2,
+            "repeated_sync_candidates": [],
+            "gain_db": -9.9,
+        }
+
+    monkeypatch.setattr("oneseg.decode.analyze_capture", no_tmcc)
+    with pytest.raises(UnverifiedTmccError) as problem:
+        decode_capture(source, tmp_path / "never.ts")
+    report = problem.value.diagnostics
+    assert report["cp_quality"] == pytest.approx(0.91)
+    assert report["pilot_coherence"] == pytest.approx(0.34)
+    assert "I/Q RMS 0.0140" in str(problem.value)
+    assert "full-scale 0.12%" in str(problem.value)
+    assert not (tmp_path / "never.ts").exists()
 
 
 def test_rejects_missing_sidecar_and_bad_extension(tmp_path):
