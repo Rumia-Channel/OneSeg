@@ -113,7 +113,7 @@ class DiagnosticBundle:
                 file.unlink(missing_ok=True)
             return None
 
-    def finish(self) -> Path:
+    def finish(self, *, survey_report: Path | None = None) -> Path:
         """Package metadata and bounded I/Q, then discard loose copies.
 
         JSONL is already flushed and closed by caller. If packaging fails,
@@ -140,6 +140,8 @@ class DiagnosticBundle:
         try:
             with ZipFile(temporary, mode="x", compression=ZIP_STORED) as archive:
                 archive.write(self.log, arcname="session.jsonl")
+                if survey_report is not None:
+                    archive.write(Path(survey_report), arcname="survey.json")
                 for file in sorted(self.directory.iterdir()):
                     if file.is_file():
                         archive.write(file, arcname=file.name)
