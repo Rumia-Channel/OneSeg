@@ -199,6 +199,7 @@ class ExperimentalLiveReceiver(QThread):
                                 "decoder_window_seconds": round(
                                     perf_counter() - decode_started, 2
                                 ),
+                                "stage_seconds": result.get("stage_seconds", {}),
                                 "queued_windows": capture_queue.qsize(),
                             })
                             self.transport.emit(data)
