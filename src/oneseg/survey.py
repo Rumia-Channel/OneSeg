@@ -279,7 +279,7 @@ def run_gain_survey(
                     if progress:
                         progress(
                             f"{applied:g} dB: "
-                            f"clip {measurement.get('fullscale_percent', 0):.2f}%, "
+                            f"clip {measurement.get('fullscale_percent')}%, "
                             f"CP {measurement.get('cp_quality')}, "
                             f"pilots {measurement.get('pilot_coherence')}, "
                             f"TMCC {measurement.get('tmcc_parity_verified_frames', 0)}, "
