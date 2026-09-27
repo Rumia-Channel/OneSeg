@@ -32,6 +32,16 @@ class UnverifiedTmccError(ValueError):
                 report.get("repeated_sync_candidates", [])
             ),
             "gain_db": report.get("gain_db"),
+            "tmcc_parity_verified_frames": len(
+                report.get("bch_parity_verified_frames", [])
+            ),
+            "tmcc_soft_source": report.get("tmcc_soft_source"),
+            "tmcc_per_carrier_verified_counts": report.get(
+                "tmcc_per_carrier_verified_counts"
+            ),
+            "integer_offset_bins": report.get("integer_offset_bins"),
+            "fractional_cfo_hz": report.get("fractional_cfo_hz"),
+            "fft_symbols": report.get("fft_symbols"),
         }
         diag = self.diagnostics
         super().__init__(
@@ -44,6 +54,17 @@ class UnverifiedTmccError(ValueError):
             f"(repeated {diag['repeated_sync_candidates']}); "
             "no MPEG-TS produced"
         )
+
+
+class DecodeStageError(ValueError):
+    """Carry verified earlier stages when a subsequent FEC/TS stage fails."""
+
+    def __init__(self, stage: str, report: dict, error: Exception):
+        self.stage = stage
+        self.diagnostics = UnverifiedTmccError(report).diagnostics
+        self.diagnostics["failed_stage"] = stage
+        self.diagnostics["original_error"] = str(error)
+        super().__init__(f"{stage} failed: {error}")
 
 
 def decode_capture(
@@ -101,20 +122,30 @@ def decode_capture(
                 f"Verified {len(frames)} TMCC frames; "
                 "extracting and deinterleaving Layer-A QPSK..."
             )
-        stage = process_fixture(
-            layer_a, tmcc_path, deinterleaved, compress=False
-        )
+        try:
+            stage = process_fixture(
+                layer_a, tmcc_path, deinterleaved, compress=False
+            )
+        except (OSError, ValueError, KeyError) as exc:
+            raise DecodeStageError(
+                "deinterleave", report, exc
+            ) from exc
         after_deinterleave = perf_counter()
         if progress:
             progress(
                 f"Deinterleaved {stage['output_bit_count']:,} coded bits; "
                 "running rate-2/3 Viterbi and outer Reed–Solomon..."
             )
-        summary = recover_file(
-            deinterleaved,
-            output,
-            max_ofdm_symbols=max_ofdm_symbols,
-        )
+        try:
+            summary = recover_file(
+                deinterleaved,
+                output,
+                max_ofdm_symbols=max_ofdm_symbols,
+            )
+        except (OSError, ValueError, KeyError) as exc:
+            raise DecodeStageError(
+                "viterbi_rs_ts", report, exc
+            ) from exc
         after_fec = perf_counter()
         summary.update({
             "stage_seconds": {
@@ -130,6 +161,16 @@ def decode_capture(
             "ofdm_mode": report["mode_assumed"],
             "ofdm_guard": report["guard_assumed"],
             "tmcc_parity_verified_frames": len(frames),
+            "tmcc_soft_source": report.get("tmcc_soft_source"),
+            "tmcc_per_carrier_verified_counts": report.get(
+                "tmcc_per_carrier_verified_counts"
+            ),
+            "tmcc_repeated_verified_pairs": report.get(
+                "tmcc_repeated_verified_pairs"
+            ),
+            "tmcc_sync_candidates": report.get("single_sync_candidates"),
+            "integer_offset_bins": report.get("integer_offset_bins"),
+            "fractional_cfo_hz": report.get("fractional_cfo_hz"),
             "layer_a": frames[0]["layer_A"],
             "input_fullscale_percent": report["iq_fullscale_percent"],
             "input_rms": report["iq_rms"],
