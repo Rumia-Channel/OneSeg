@@ -340,7 +340,10 @@ class MainWindow(QMainWindow):
             self.worker.request("audio", enabled)
 
     def _start(self):
-        if self.worker is not None or self.live is not None:
+        if (
+            self.worker is not None or self.live is not None
+            or self.survey is not None or self.decoder is not None
+        ):
             return
         self.worker = Receiver(
             frequency_hz=round(self.frequency.value() * 1e6),
@@ -655,6 +658,7 @@ class MainWindow(QMainWindow):
         if self.live is not None:
             self.live_btn.setEnabled(True)
             self.live_btn.setText("Stop experimental LIVE 1seg")
+            self.survey_btn.setEnabled(False)
             return
         permitted = (
             self.worker is None
@@ -764,6 +768,10 @@ class MainWindow(QMainWindow):
         try:
             self.live_stream.push(data)
         except (BufferError, ValueError) as exc:
+            if self.live is not None:
+                self.live.record_event(
+                    "player_buffer_error", error=str(exc),
+                )
             self.status.setText(f"Live TS consumer cannot keep up: {exc}")
             self._stop_live()
 
@@ -862,6 +870,11 @@ class MainWindow(QMainWindow):
             )
 
     def _live_player_failed(self, message):
+        if self.live is not None:
+            self.live.record_event(
+                "player_error", error=message,
+                rendered_video_frames=self.live_frames,
+            )
         # Partial TS can lack PAT/PMT or contain broken PES. Stop the
         # experiment, but do not treat this as a native USB failure.
         if self.live is None:
@@ -919,6 +932,9 @@ class MainWindow(QMainWindow):
         )
 
     def _decode_saved_iq(self):
+        if self.survey is not None:
+            self.status.setText("Wait for automatic RF survey before decoding.")
+            return
         if self.decoder is not None:
             return
         if self.worker is not None:
@@ -998,7 +1014,7 @@ class MainWindow(QMainWindow):
         self._update_live_button()
 
     def _play_ts(self):
-        if self.live is not None:
+        if self.survey is not None or self.live is not None:
             return
         if self.player is not None:
             self.player.stop()
@@ -1022,6 +1038,11 @@ class MainWindow(QMainWindow):
     def _show_frame(self, image):
         if self.live is not None:
             self.live_frames += 1
+            if self.live_frames == 1 or self.live_frames % 30 == 0:
+                self.live.record_event(
+                    "video_frame",
+                    frames_rendered=self.live_frames,
+                )
         image_size = self.video.size()
         pixmap = QPixmap.fromImage(image)
         self.video.setPixmap(pixmap.scaled(
@@ -1086,6 +1107,11 @@ class MainWindow(QMainWindow):
         self._update_scan_button()
 
     def _stop(self):
+        if self.survey is not None:
+            self.survey.stop()
+            self.stop_btn.setEnabled(False)
+            self.status.setText("Stopping automatic gain survey...")
+            return
         if self.live is not None:
             self._stop_live()
             return
@@ -1116,6 +1142,14 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
+        if self.survey is not None and self.survey.isRunning():
+            self.survey.stop()
+            if not self.survey.wait(3000):
+                self.status.setText(
+                    "Waiting for automatic gain survey to release USB..."
+                )
+                event.ignore()
+                return
         if self.live is not None and self.live.isRunning():
             self._stop_live()
             if not self.live.wait(3000):
