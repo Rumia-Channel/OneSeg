@@ -77,3 +77,25 @@ def test_bad_shapes_are_rejected():
         find_pilot_alignment(np.zeros((5, 1024), dtype=np.complex64))
     with pytest.raises(ValueError):
         equalize_segment(np.zeros((4, 433)), find_pilot_alignment(synthetic_fft()))
+
+
+
+def test_batched_equalization_matches_original_linear_interpolation():
+    fft = synthetic_fft(shift=12, phase=2, symbols=200)
+    alignment = find_pilot_alignment(fft, max_shift=16)
+    batch = equalize_segment(fft, alignment)
+    expected = np.empty_like(batch)
+    original = fft[
+        :, 512 - 216 + alignment.integer_offset_bins
+           + np.arange(433)
+    ]
+    reference = central_pilot_polarities()
+    for row in range(len(fft)):
+        positions = scattered_pilot_indices(row, alignment.symbol_phase)
+        h = original[row, positions] / reference[positions]
+        interp = (
+            np.interp(np.arange(433), positions, h.real)
+            + 1j * np.interp(np.arange(433), positions, h.imag)
+        )
+        expected[row] = original[row] / interp
+    np.testing.assert_allclose(batch, expected, rtol=2e-5, atol=2e-5)
