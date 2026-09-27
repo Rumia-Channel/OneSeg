@@ -11,8 +11,9 @@ def test_end_to_end_orchestration_without_usb_or_fake_ts(tmp_path, monkeypatch):
     cap.with_suffix(".c64.json").write_text('{"sample_rate_hz": 2048000}')
     stages = []
 
-    def fake_analyze(source, *, seconds, layer_a_output):
+    def fake_analyze(source, *, seconds, layer_a_output, compress_fixture):
         assert source == cap and seconds == 3
+        assert compress_fixture is False
         assert not layer_a_output.exists()
         layer_a_output.write_bytes(b"layer")
         stages.append("pilot")
@@ -26,7 +27,8 @@ def test_end_to_end_orchestration_without_usb_or_fake_ts(tmp_path, monkeypatch):
             "iq_overload_warning": True,
         }
 
-    def fake_deint(layer, report, output):
+    def fake_deint(layer, report, output, *, compress):
+        assert compress is False
         assert layer.read_bytes() == b"layer"
         assert json.loads(report.read_text())["mode_assumed"] == 3
         output.write_bytes(b"bits")
