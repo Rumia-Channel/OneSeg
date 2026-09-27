@@ -795,11 +795,17 @@ class MainWindow(QMainWindow):
         failure = report.get("failure_reason")
         requested_gain = report.get("requested_gain_db")
         applied_gain = report.get("applied_gain_db")
+        readback = report.get("gain_readback_db")
         gain_evidence = (
             f" RF gain requested {requested_gain:g} / "
-            f"applied {applied_gain:g} dB "
-            f"(FC0013 lower steps "
-            f"{report.get('available_low_gains_db', [])})."
+            f"commanded {applied_gain:g} dB; getter {readback} dB"
+            + (
+                " (getter mismatch, cannot independently confirm analog gain)"
+                if report.get("gain_readback_matches_command") is False
+                else ""
+            )
+            + f"; FC0013 lower steps "
+            f"{report.get('available_low_gains_db', [])}."
             if requested_gain is not None and applied_gain is not None
             else ""
         )
