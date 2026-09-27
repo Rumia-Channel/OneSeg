@@ -93,7 +93,7 @@ def test_live_thread_pipeline_with_fake_usb_and_real_decoding_boundary(
         if capture_count[0] > 1:
             assert decoded.wait(timeout=3)
             raise CaptureCancelled("test ended after one window")
-        path.write_bytes(b"\0\xff" * 4)
+        path.write_bytes(b"\0\xff" * samples_required)
         created.append(path)
 
     def fake_expand(source, dest, *, metadata):
@@ -148,10 +148,22 @@ def test_live_thread_pipeline_with_fake_usb_and_real_decoding_boundary(
     ]
     assert [entry["event"] for entry in entries] == [
         "session_start", "tuner_opened", "usb_window",
-        "window_result", "session_stop",
+        "window_result", "diagnostic_example_saved", "session_stop",
     ]
     assert entries[3]["metrics"]["accepted_chunk"] == 1
     assert entries[3]["checks"]["rs_ts"]["status"] == "unknown"
+    assert worker.bundle_path is not None
+    assert worker.bundle_path.exists()
+    from zipfile import ZipFile
+    with ZipFile(worker.bundle_path) as archive:
+        names = archive.namelist()
+        assert "session.jsonl" in names
+        assert "report.json" in names
+        assert sum(x.endswith(".u8iq") for x in names) == 1
+        assert sum(x.endswith(".ts") for x in names) == 1
+        assert (
+            entries[4]["example"]["category"] == "first_success"
+        )
 
 
 
