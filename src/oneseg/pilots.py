@@ -194,6 +194,7 @@ def candidate_tmcc_sync(soft: np.ndarray, *, max_errors: int = 2) -> dict:
 def analyze_capture(
     path: Path, *, seconds: float = 1.2,
     layer_a_output: Path | None = None,
+    compress_fixture: bool = True,
 ) -> dict:
     """Process capture off line, finding pilot positions before attempting TMCC."""
     if not 0.5 <= seconds <= 3.0:
@@ -254,6 +255,7 @@ def analyze_capture(
             pilot_phase=alignment.symbol_phase,
             tmcc_frames=result["bch_parity_verified_frames"],
             integer_offset_bins=alignment.integer_offset_bins,
+            compress=compress_fixture,
         )
     return result
 
