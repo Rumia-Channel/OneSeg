@@ -129,3 +129,22 @@ def expand_raw_to_c64(
         if not target.exists():
             sidecar.unlink(missing_ok=True)
         raise
+
+
+
+def raw_fullscale_percent(window: Path) -> float:
+    """Exact-full-scale I/Q occupancy on an acquired raw-u8 window.
+
+    Memory-map only after capture; never allocate or calculate this in
+    the time-critical USB read loop. A component u8 0/255 maps to +/-1.
+    """
+    path = Path(window)
+    size = path.stat().st_size
+    if size <= 0 or size % 2:
+        raise ValueError("invalid raw I/Q component count")
+    samples = np.memmap(path, dtype=np.uint8, mode="r").reshape(-1, 2)
+    fullscale = (
+        (samples[:, 0] == 0) | (samples[:, 0] == 255)
+        | (samples[:, 1] == 0) | (samples[:, 1] == 255)
+    )
+    return float(100 * np.count_nonzero(fullscale) / len(samples))
