@@ -625,6 +625,16 @@ class MainWindow(QMainWindow):
             if percent is not None else "full-scale unknown"
         )
         failure = report.get("failure_reason")
+        steps = report.get("stage_seconds") or {}
+        breakdown = (
+            f" OFDM/TMCC {steps['ofdm_pilots_tmcc']:.2f}s, "
+            f"interleave {steps['deinterleave']:.2f}s, "
+            f"FEC/TS {steps['fec_rs_ts']:.2f}s."
+            if all(
+                k in steps
+                for k in ("ofdm_pilots_tmcc", "deinterleave", "fec_rs_ts")
+            ) else ""
+        )
         self.live_metrics.setText(
             f"LIVE: {report['accepted_total']} real TS packets "
             f"(latest +{report['accepted_chunk']}, "
@@ -640,6 +650,7 @@ class MainWindow(QMainWindow):
             f"DSP {report.get('decoder_window_seconds')}s per 3 s window; "
             f"pending {report.get('queued_windows')} windows. "
             "Window discontinuities remain."
+            + breakdown
             + (f" Latest window FAILED: {failure}" if failure else "")
         )
         if failure and not self.live_frames:
