@@ -97,7 +97,11 @@ def test_failed_live_window_surfaces_actual_adc_and_stage_bottleneck():
         "decoder_window_seconds": 5.83,
         "queued_windows": 1,
         "failure_reason": "ValueError: no parity-verified TMCC frames",
+        "cp_quality": 0.95,
+        "pilot_coherence": 0.45,
+        "rms": 0.021,
     })
+    assert "CP 0.950 / pilots 0.450 / RMS 0.0210" in window.live_metrics.text()
     assert "11.32%" in window.live_metrics.text()
     assert "DSP 5.83s" in window.live_metrics.text()
     assert "Latest window FAILED" in window.live_metrics.text()
