@@ -657,7 +657,8 @@ class MainWindow(QMainWindow):
             self.video.setText(
                 f"Last LIVE window failed: {failure}. "
                 + (
-                    "Input overloaded: reduce RF gain before retrying."
+                    "Input overloaded: Stop LIVE and try -9.9 dB "
+                    "manual gain, then compare real packet counts."
                     if report["overloaded"] else
                     "Check 20ch RF, OFDM and decoder timings."
                 )
@@ -668,8 +669,8 @@ class MainWindow(QMainWindow):
         if report["overloaded"]:
             self.video.setText(
                 f"Experimental live: {report['accepted_total']} RS-verified TS "
-                "packets, but I/Q ADC clipping >5%. Reduce RF gain. "
-                "Video playback not yet verified."
+                "packets, but I/Q ADC clipping >5%. Stop LIVE; "
+                "try -9.9 dB manual gain. Video playback not yet verified."
             )
         else:
             self.video.setText(
