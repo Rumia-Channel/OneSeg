@@ -116,7 +116,7 @@ def qpsk_bit_deinterleave(
 
 
 def process_fixture(
-    fixture: Path, tmcc_report: Path, output: Path
+    fixture: Path, tmcc_report: Path, output: Path, *, compress: bool = True
 ) -> dict:
     """Check Mode-3/QPSK/one-segment protected metadata and save stages."""
     fixture = Path(fixture)
@@ -199,7 +199,8 @@ def process_fixture(
     }
     try:
         with temp.open("xb") as destination:
-            np.savez_compressed(
+            writer = np.savez_compressed if compress else np.savez
+            writer(
                 destination,
                 deinterleaved_qpsk_carriers=after_time,
                 qpsk_hard_bits=hard,
