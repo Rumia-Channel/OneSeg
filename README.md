@@ -846,3 +846,61 @@ This adds reproducible RF/DSP observability and an automated
 **diagnostic measurement process**, not a confirmed continuous
 streaming one-seg decoder: the existing 3-second window
 resets and missing PAT/PMT/PES are not fixed by these logs.
+
+
+## FC0013 gain-survey correction for 2026-09-27 06:46 UTC report
+
+The first 14-window / 7-gain automatic 20ch survey finished correctly,
+but **its gain aggregation contained a bug**: the local librtlsdr
+gain getter reported **0.0 dB for all 14 manual negative-gain
+commands**. The code treated that contradictory getter response as
+the actual commanded gain, incorrectly grouping all 14 windows as
+0.0 dB and suppressing the conditional retest suggestion.
+The I/Q RMS and full-scale occupancy varied systematically by
+requested negative gain, so this is NOT evidence that every trial
+actually used 0.0 dB. Nor is the analog gain independently
+calibrated from I/Q metrics.
+
+Current code records **requested gain**, the nearest
+**advertised/accepted commanded gain**, and **raw getter
+readback** as *separate fields*; mismatches are explicit in
+the LIVE GUI and survey JSONL/JSON. Per-gain aggregation
+uses the commanded advertised step, never a contradictory
+getter; old .jsonl reports are unchanged. A regression test
+models a getter always returning zero after valid negative
+setter calls.
+
+Regrouping the original 14 windows by their *requested*
+supported steps, without changing any signal or TS
+measurements, yields:
+
+| Commanded dB | 3-sec windows with real RS TS | Total real RS TS | Full-scale % trials |
+| ---: | ---: | ---: | --- |
+| -9.9 | 1/2 | 261 | 0.051, 0.048 |
+| -7.3 | 1/2 | 142 | 1.865, 1.842 |
+| -6.5 | 2/2 | 375 | 3.740, 3.620 |
+| -6.3 | 1/2 | 101 | 3.833, 3.835 |
+| -6.0 | 1/2 | 274 | 4.052, 3.982 |
+| -5.8 | 1/2 | 29 | 5.210, 5.209 |
+| -5.4 | 0/2 | 0 | 4.470, 4.417 |
+
+The existing automation criterion (>=2 RS-positive trials,
+>=2 protected TMCC frames, no >=5% full-scale window)
+makes **-6.5 dB a candidate for a controlled MANUAL retest**,
+not an independently verified optimal RF gain or confirmed
+TV reception. The -9.9 dB trials had the least ADC clipping
+and one excellent 261-packet window, but the other failed
+204-byte sync. Thus changing gain alone does not explain
+every failure; OFDM timing, Viterbi alignment and continuity
+still require work.
+
+Across all 14 windows: 1,182 genuine RS-verified packets,
+no PAT/PMT recovered in any successful window. Fully
+decoded windows spent about 4.2–4.7 seconds on the DSP
+pipeline **in addition to** the 3-second RF window,
+so current independent-window live decoding remains too
+slow and discontinuous. Do not infer real-time video from
+the number of recovered packets or the corrected gain
+aggregation. Save existing survey files for comparison;
+repeating an identical 14-window RF survey is not required
+merely to correct the aggregation bug.
