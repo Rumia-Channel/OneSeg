@@ -619,6 +619,12 @@ class MainWindow(QMainWindow):
             self.status.setText(
                 "Real PAT/PMT recovered; starting PyAV from this TS window."
             )
+        percent = report.get("fullscale_percent")
+        clipping_text = (
+            f"{percent:.2f}% full-scale"
+            if percent is not None else "full-scale unknown"
+        )
+        failure = report.get("failure_reason")
         self.live_metrics.setText(
             f"LIVE: {report['accepted_total']} real TS packets "
             f"(latest +{report['accepted_chunk']}, "
@@ -627,13 +633,25 @@ class MainWindow(QMainWindow):
             f"PAT {'found' if report['has_pat'] else 'absent'}, "
             f"PMT {'found' if report['has_pmt'] else 'absent'}, "
             f"skipped {self.live_ts_skipped_waiting_psi} packets while "
-            f"waiting for verified PSI; ADC {'OVERLOADED' if report['overloaded'] else 'below 5% full scale'}; "
+            f"waiting for verified PSI; ADC {clipping_text}"
+            f"{' OVERLOADED (reduce gain)' if report['overloaded'] else ''}; "
             f"{self.live_frames} rendered video frames. "
             f"USB {report.get('usb_window_seconds')}s, "
             f"DSP {report.get('decoder_window_seconds')}s per 3 s window; "
             f"pending {report.get('queued_windows')} windows. "
             "Window discontinuities remain."
+            + (f" Latest window FAILED: {failure}" if failure else "")
         )
+        if failure and not self.live_frames:
+            self.video.setText(
+                f"Last LIVE window failed: {failure}. "
+                + (
+                    "Input overloaded: reduce RF gain before retrying."
+                    if report["overloaded"] else
+                    "Check 20ch RF, OFDM and decoder timings."
+                )
+            )
+            return
         if self.live_frames:
             return  # Do not overwrite a real rendered video frame with text.
         if report["overloaded"]:
