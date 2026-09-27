@@ -200,6 +200,8 @@ def summarize_log(path: Path) -> dict:
     checks = defaultdict(Counter)
     observed = 0
     final = None
+    supported_gain_steps: list[float] = []
+    legacy_gain_readback_mismatches = 0
     with path.open(encoding="utf-8") as stream:
         for number, line in enumerate(stream, 1):
             if not line.strip():
@@ -217,11 +219,26 @@ def summarize_log(path: Path) -> dict:
                 raise ValueError(f"unsupported log schema at line {number}")
             counts[record["event"]] += 1
             final = record["utc"]
+            if record["event"] == "survey_gain_plan":
+                supported_gain_steps = [
+                    float(v) for v in record.get("supported_gains_db", [])
+                ]
             if record["event"] != "window_result":
                 continue
             observed += 1
             data = record.get("metrics", {})
-            gain = data.get("applied_gain_db")
+            gain = data.get("commanded_gain_db")
+            if gain is None:
+                gain = data.get("applied_gain_db")
+                requested = data.get("gain_requested_db")
+                if supported_gain_steps and requested is not None:
+                    commanded = min(
+                        supported_gain_steps,
+                        key=lambda step: abs(step - float(requested)),
+                    )
+                    if gain is None or abs(float(gain) - commanded) > 0.051:
+                        legacy_gain_readback_mismatches += 1
+                        gain = commanded
             key = "unknown" if gain is None else f"{gain:g}"
             slot = by_gain[key]
             slot["windows"] += 1
@@ -246,6 +263,9 @@ def summarize_log(path: Path) -> dict:
         "window_results": observed,
         "latest_utc": final,
         "by_applied_gain": dict(by_gain),
+        "gain_grouping_basis": "advertised commanded tuner gain step, not unreliable getter",
+        "legacy_gain_readback_mismatches_regrouped":
+            legacy_gain_readback_mismatches,
         "checks": {key: dict(value) for key, value in checks.items()},
         "not_a_continuous_tv_lock": True,
     }
