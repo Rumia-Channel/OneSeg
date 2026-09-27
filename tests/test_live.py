@@ -53,7 +53,7 @@ def test_invalid_live_tuner_settings_rejected():
 
 
 def test_live_thread_pipeline_with_fake_usb_and_real_decoding_boundary(
-    monkeypatch,
+    monkeypatch, tmp_path,
 ):
     """One full capture gets decoded while a different owner reads USB.
 
@@ -118,6 +118,9 @@ def test_live_thread_pipeline_with_fake_usb_and_real_decoding_boundary(
             "input_overload_warning": False,
         }
 
+    monkeypatch.setattr(
+        "oneseg.telemetry.default_log_directory", lambda: tmp_path
+    )
     monkeypatch.setattr("oneseg.live.record_raw_window", fake_raw)
     monkeypatch.setattr("oneseg.live.expand_raw_to_c64", fake_expand)
     worker = ExperimentalLiveReceiver(
@@ -136,6 +139,19 @@ def test_live_thread_pipeline_with_fake_usb_and_real_decoding_boundary(
     assert capture_count[0] == 2
     assert not created[0].exists()  # temp raw bytes deleted after decode join
     assert not created[0].with_suffix(".c64").exists()
+    import json
+    assert worker.log_path is not None
+    entries = [
+        json.loads(line) for line in worker.log_path.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert [entry["event"] for entry in entries] == [
+        "session_start", "tuner_opened", "usb_window",
+        "window_result", "session_stop",
+    ]
+    assert entries[3]["metrics"]["accepted_chunk"] == 1
+    assert entries[3]["checks"]["rs_ts"]["status"] == "unknown"
 
 
 
