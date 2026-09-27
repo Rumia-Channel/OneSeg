@@ -625,6 +625,15 @@ class MainWindow(QMainWindow):
             if percent is not None else "full-scale unknown"
         )
         failure = report.get("failure_reason")
+        cp = report.get("cp_quality")
+        pilots = report.get("pilot_coherence")
+        rms = report.get("rms")
+        signal_evidence = (
+            f" CP {cp:.3f} / pilots {pilots:.3f} / "
+            f"RMS {rms:.4f}."
+            if cp is not None and pilots is not None and rms is not None
+            else " CP/pilots unavailable."
+        )
         steps = report.get("stage_seconds") or {}
         breakdown = (
             f" OFDM/TMCC {steps['ofdm_pilots_tmcc']:.2f}s, "
@@ -650,6 +659,7 @@ class MainWindow(QMainWindow):
             f"DSP {report.get('decoder_window_seconds')}s per 3 s window; "
             f"pending {report.get('queued_windows')} windows. "
             "Window discontinuities remain."
+            + signal_evidence
             + breakdown
             + (f" Latest window FAILED: {failure}" if failure else "")
         )
