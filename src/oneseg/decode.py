@@ -55,7 +55,8 @@ def decode_capture(
         tmcc_path = root / "tmcc.json"
         deinterleaved = root / "deinterleaved.npz"
         report = analyze_capture(
-            capture, seconds=seconds, layer_a_output=layer_a
+            capture, seconds=seconds, layer_a_output=layer_a,
+            compress_fixture=False,
         )
         frames = report["bch_parity_verified_frames"]
         if not frames:
@@ -71,7 +72,9 @@ def decode_capture(
                 f"Verified {len(frames)} TMCC frames; "
                 "extracting and deinterleaving Layer-A QPSK..."
             )
-        stage = process_fixture(layer_a, tmcc_path, deinterleaved)
+        stage = process_fixture(
+            layer_a, tmcc_path, deinterleaved, compress=False
+        )
         if progress:
             progress(
                 f"Deinterleaved {stage['output_bit_count']:,} coded bits; "
