@@ -103,6 +103,7 @@ class MainWindow(QMainWindow):
         self.live: ExperimentalLiveReceiver | None = None
         self.survey: GainSurveyWorker | None = None
         self.latest_log_path: Path | None = None
+        self.latest_bundle_path: Path | None = None
         self.live_stream: LiveTsBuffer | None = None
         self.live_frames = 0
         self.live_player_started = False
@@ -267,11 +268,12 @@ class MainWindow(QMainWindow):
         self.live_metrics.setWordWrap(True)
         layout.addWidget(self.live_metrics)
         self.log_label = QLabel(
-            "Live diagnostic logs: ~/OneSeg/logs (one JSONL per run)"
+            "Live diagnostics automatically saved under ~/OneSeg/logs; "
+            "after Stop, copy the ZIP path and send that ZIP."
         )
         self.log_label.setWordWrap(True)
         layout.addWidget(self.log_label)
-        self.copy_log_btn = QPushButton("Copy latest diagnostic log path")
+        self.copy_log_btn = QPushButton("Copy live diagnostic file path")
         self.copy_log_btn.setEnabled(False)
         layout.addWidget(self.copy_log_btn)
 
@@ -562,15 +564,30 @@ class MainWindow(QMainWindow):
 
     def _live_log_ready(self, path: str):
         self.latest_log_path = Path(path)
+        self.latest_bundle_path = None
         self.log_label.setText(
-            f"Diagnostic JSONL (autosaved, safe to share): {path}"
+            f"Live diagnostics: recording JSONL {path}. "
+            "A bounded I/Q + JSONL diagnostic ZIP is created on Stop."
+        )
+        self.copy_log_btn.setEnabled(True)
+
+    def _live_bundle_ready(self, path: str):
+        self.latest_bundle_path = Path(path)
+        self.log_label.setText(
+            f"Automatic diagnostic ZIP: {path}. "
+            "Includes JSONL, summary, first failed/successful raw-IQ "
+            "windows (when available), and genuine partial TS if recovered. "
+            "It is local only; nothing was uploaded."
         )
         self.copy_log_btn.setEnabled(True)
 
     def _copy_log_path(self):
-        if self.latest_log_path is not None:
-            QApplication.clipboard().setText(str(self.latest_log_path))
-            self.status.setText("Copied diagnostic JSONL path to clipboard.")
+        selected = self.latest_bundle_path or self.latest_log_path
+        if selected is not None:
+            QApplication.clipboard().setText(str(selected))
+            self.status.setText(
+                f"Copied diagnostics path: {selected}"
+            )
 
     def _toggle_gain_survey(self):
         if self.survey is not None:
@@ -732,6 +749,7 @@ class MainWindow(QMainWindow):
         self.live.progress.connect(self._live_progress)
         self.live.status.connect(self.status.setText)
         self.live.log_ready.connect(self._live_log_ready)
+        self.live.bundle_ready.connect(self._live_bundle_ready)
         self.live.failed.connect(self._live_failed)
         self.live.finished.connect(self._live_finished)
         self.player = TransportPlayer(self.live_stream)
