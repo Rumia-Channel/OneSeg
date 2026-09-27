@@ -63,7 +63,7 @@ def test_survey_runs_on_one_tuner_thread_with_no_native_async(
         assert samples_required == 2048000
         assert warmup_buffers == 1
         counts["raw"] += 1
-        target.write_bytes(bytes((126, 127)) * 64)
+        target.write_bytes(bytes((126, 127)) * samples_required)
 
     def fake_expand(raw, target, *, metadata):
         assert raw.is_file() and metadata["gain_db"] == device.gain
@@ -83,6 +83,7 @@ def test_survey_runs_on_one_tuner_thread_with_no_native_async(
     def fake_decode(target, output, *, seconds, max_ofdm_symbols):
         assert seconds == 1 and max_ofdm_symbols == 1020
         counts["fec"] += 1
+        output.write_bytes((bytes((0x47,)) + bytes(187)) * 22)
         return {
             "rs_and_ts_accepted_packets": 22,
             "rejected_rs_or_invalid_ts_packets": 1,
@@ -105,6 +106,20 @@ def test_survey_runs_on_one_tuner_thread_with_no_native_async(
     assert report["promising_gain_for_manual_retest_db"] == -7.3
     assert len(report["windows"]) == 4
     assert output.is_file()
+    from zipfile import ZipFile
+    bundle = report["diagnostic_zip"]
+    assert bundle and bundle.endswith(".diagnostics.zip")
+    with ZipFile(bundle) as zipped:
+        names = zipped.namelist()
+        assert "survey.json" in names
+        assert "session.jsonl" in names
+        assert "report.json" in names
+        assert sum(x.endswith(".u8iq") for x in names) == 1
+        assert sum(x.endswith(".ts") for x in names) == 1
+        assert json.loads(zipped.read("survey.json"))["by_gain"]
+        assert len(zipped.read(next(
+            x for x in names if x.endswith(".u8iq")
+        ))) == 2 * 2048000
     assert all(w["accepted_chunk"] == 22 for w in report["windows"])
     assert all(w["checks"]["tmcc_parity"]["status"] == "pass" for w in report["windows"])
     assert any(
