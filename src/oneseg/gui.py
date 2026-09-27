@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import csv
+from threading import Event
 from datetime import datetime
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from .player import TransportPlayer
 from .diagnostics import explain_receiver_error
 from .decode import decode_capture
 from .live import ExperimentalLiveReceiver, LiveTsBuffer
+from .survey import run_gain_survey
 
  
 class OfflineDecodeWorker(QThread):
@@ -62,6 +64,34 @@ class OfflineDecodeWorker(QThread):
             self.succeeded.emit(summary)
 
 
+class GainSurveyWorker(QThread):
+    """Survey actual tuner gain steps off the GUI thread, no live TV running."""
+    progress = Signal(str)
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, channel: int, ppm: int):
+        super().__init__()
+        self.channel, self.ppm = int(channel), int(ppm)
+        self.stop_event = Event()
+
+    def stop(self):
+        self.stop_event.set()
+
+    def run(self):
+        try:
+            result = run_gain_survey(
+                channel=self.channel, ppm=self.ppm,
+                seconds=3.0, repeats=2,
+                cancelled=self.stop_event.is_set,
+                progress=self.progress.emit,
+            )
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+        else:
+            self.succeeded.emit(result)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -71,6 +101,8 @@ class MainWindow(QMainWindow):
         self.player: TransportPlayer | None = None
         self.decoder: OfflineDecodeWorker | None = None
         self.live: ExperimentalLiveReceiver | None = None
+        self.survey: GainSurveyWorker | None = None
+        self.latest_log_path: Path | None = None
         self.live_stream: LiveTsBuffer | None = None
         self.live_frames = 0
         self.live_player_started = False
@@ -204,6 +236,12 @@ class MainWindow(QMainWindow):
             "Live decoder has window gaps; video is NOT guaranteed."
         )
         self.live_btn.setEnabled(False)
+        self.survey_btn = QPushButton("Auto check RF gains + log…")
+        self.survey_btn.setToolTip(
+            "Stop all receivers first; sweep actual negative FC0013 "
+            "gain steps twice and verify CP, pilots, protected TMCC "
+            "and genuine RS MPEG-TS. No live playback."
+        )
         self.decode_iq_btn = QPushButton("Decode saved IQ → partial TS…")
         self.decode_iq_btn.setToolTip(
             "Decode a previously recorded .c64 and its adjacent .c64.json "
@@ -218,6 +256,7 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.record_btn)
         actions.addWidget(self.short_capture_btn)
         actions.addWidget(self.live_btn)
+        actions.addWidget(self.survey_btn)
         actions.addWidget(self.decode_iq_btn)
         actions.addWidget(self.play_ts_btn)
         layout.addLayout(actions)
@@ -227,6 +266,14 @@ class MainWindow(QMainWindow):
         self.live_metrics = QLabel("Live decoder: idle")
         self.live_metrics.setWordWrap(True)
         layout.addWidget(self.live_metrics)
+        self.log_label = QLabel(
+            "Live diagnostic logs: ~/OneSeg/logs (one JSONL per run)"
+        )
+        self.log_label.setWordWrap(True)
+        layout.addWidget(self.log_label)
+        self.copy_log_btn = QPushButton("Copy latest diagnostic log path")
+        self.copy_log_btn.setEnabled(False)
+        layout.addWidget(self.copy_log_btn)
 
         self.mode.currentIndexChanged.connect(self._mode_changed)
         self.channel.valueChanged.connect(self._channel_changed)
@@ -244,6 +291,8 @@ class MainWindow(QMainWindow):
         self.play_ts_btn.clicked.connect(self._play_ts)
         self.decode_iq_btn.clicked.connect(self._decode_saved_iq)
         self.live_btn.clicked.connect(self._toggle_live)
+        self.survey_btn.clicked.connect(self._toggle_gain_survey)
+        self.copy_log_btn.clicked.connect(self._copy_log_path)
         self.scan_button.clicked.connect(self._scan_clicked)
         self.scan_tune_button.clicked.connect(self._tune_scan_selection)
         self.scan_export_button.clicked.connect(self._export_scan)
@@ -508,6 +557,100 @@ class MainWindow(QMainWindow):
             return
         self.status.setText(f"RF scan saved: {path.name}")
 
+    def _live_log_ready(self, path: str):
+        self.latest_log_path = Path(path)
+        self.log_label.setText(
+            f"Diagnostic JSONL (autosaved, safe to share): {path}"
+        )
+        self.copy_log_btn.setEnabled(True)
+
+    def _copy_log_path(self):
+        if self.latest_log_path is not None:
+            QApplication.clipboard().setText(str(self.latest_log_path))
+            self.status.setText("Copied diagnostic JSONL path to clipboard.")
+
+    def _toggle_gain_survey(self):
+        if self.survey is not None:
+            self.survey.stop()
+            self.status.setText(
+                "Stopping gain survey after the current USB/DSP window..."
+            )
+            return
+        if (
+            self.worker is not None or self.live is not None
+            or self.decoder is not None or self.player is not None
+            or self.mode.currentData() != "oneseg"
+        ):
+            QMessageBox.information(
+                self, "Stop receiver first",
+                "Automatic gain survey needs exclusive RTL-SDR access "
+                "and will not interrupt running television or SDR.",
+            )
+            return
+        answer = QMessageBox.question(
+            self, "Automatic gain diagnostics",
+            "Test each advertised nonpositive FC0013 gain twice "
+            "on the selected physical channel (3 seconds per window)?\n"
+            "This may take several minutes. No unverified video or "
+            "transport packets will be created. Results will be saved "
+            "to ~/OneSeg/logs.",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.survey = GainSurveyWorker(
+            self.channel.value(), self.ppm.value()
+        )
+        self.survey.progress.connect(self.status.setText)
+        self.survey.succeeded.connect(self._survey_succeeded)
+        self.survey.failed.connect(self._survey_failed)
+        self.survey.finished.connect(self._survey_finished)
+        self._live_controls(True)
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.decode_iq_btn.setEnabled(False)
+        self.play_ts_btn.setEnabled(False)
+        self._update_live_button()
+        self.status.setText("Starting automatic gain survey; tuner exclusive...")
+        self.survey.start()
+
+    def _survey_succeeded(self, report: dict):
+        self.latest_log_path = Path(report["log_jsonl"])
+        self.log_label.setText(
+            f"Gain survey JSON: {report['report_json']} | "
+            f"full JSONL: {report['log_jsonl']}"
+        )
+        self.copy_log_btn.setEnabled(True)
+        suggested = report["promising_gain_for_manual_retest_db"]
+        label = (
+            f"RS-validated candidate gain {suggested:g} dB for manual retest"
+            if suggested is not None
+            else "No gain met repeated TS and low-overload criteria"
+        )
+        self.live_metrics.setText(
+            f"Auto gain survey: {len(report['windows'])} windows checked. "
+            f"{label}. No live TV lock inferred."
+        )
+        self.status.setText(
+            f"Auto gain report saved: {report['report_json']}"
+        )
+
+    def _survey_failed(self, error: str):
+        self.status.setText(
+            "Automatic gain survey failed; check the diagnostic log: " + error
+        )
+
+    def _survey_finished(self):
+        self.survey = None
+        self._live_controls(False)
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.decode_iq_btn.setEnabled(True)
+        self.play_ts_btn.setEnabled(self.player is None)
+        self._update_live_button()
+
     def _update_live_button(self):
         if self.live is not None:
             self.live_btn.setEnabled(True)
@@ -517,11 +660,24 @@ class MainWindow(QMainWindow):
             self.worker is None
             and self.decoder is None
             and self.player is None
+            and self.survey is None
             and self.mode.currentData() == "oneseg"
             and not self.auto_gain.isChecked()
         )
         self.live_btn.setEnabled(permitted)
         self.live_btn.setText("Watch 1seg LIVE (experimental)")
+        if self.survey is not None:
+            self.survey_btn.setEnabled(True)
+            self.survey_btn.setText("Stop automatic gain survey")
+        else:
+            self.survey_btn.setEnabled(
+                self.worker is None
+                and self.live is None
+                and self.decoder is None
+                and self.player is None
+                and self.mode.currentData() == "oneseg"
+            )
+            self.survey_btn.setText("Auto check RF gains + log…")
 
     def _live_controls(self, running: bool):
         # A live session owns the RF center/gain for its entire lifetime.
@@ -541,7 +697,10 @@ class MainWindow(QMainWindow):
         if self.live is not None:
             self._stop_live()
             return
-        if self.worker is not None or self.decoder is not None or self.player is not None:
+        if (
+            self.worker is not None or self.decoder is not None
+            or self.player is not None or self.survey is not None
+        ):
             QMessageBox.information(
                 self, "Stop other processing first",
                 "Stop the receiver, offline decoder and file TS player "
@@ -568,6 +727,7 @@ class MainWindow(QMainWindow):
         self.live.transport.connect(self._live_transport)
         self.live.progress.connect(self._live_progress)
         self.live.status.connect(self.status.setText)
+        self.live.log_ready.connect(self._live_log_ready)
         self.live.failed.connect(self._live_failed)
         self.live.finished.connect(self._live_finished)
         self.player = TransportPlayer(self.live_stream)
