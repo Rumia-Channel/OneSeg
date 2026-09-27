@@ -126,6 +126,8 @@ class ExperimentalLiveReceiver(QThread):
         self.frequency_hz = int(frequency_hz)
         self.ppm = int(ppm)
         self.gain = float(gain)
+        self.applied_gain_db = float(gain)
+        self.available_low_gains_db: list[float] = []
         self.chunk_seconds = float(chunk_seconds)
         self.max_ofdm_symbols = max_ofdm_symbols
         self.device_factory = device_factory
@@ -171,7 +173,9 @@ class ExperimentalLiveReceiver(QThread):
                                 metadata={
                                     "source": "experimental_live_window",
                                     "center_frequency_hz": self.frequency_hz,
-                                    "gain_db": self.gain, "ppm": self.ppm,
+                                    "gain_db": self.applied_gain_db,
+                                    "gain_requested_db": self.gain,
+                                    "ppm": self.ppm,
                                 },
                             )
                             result = self.decode_function(
@@ -194,6 +198,12 @@ class ExperimentalLiveReceiver(QThread):
                                     or raw_clipping > 5.0
                                 ),
                                 "fullscale_percent": raw_clipping,
+                            "requested_gain_db": self.gain,
+                            "applied_gain_db": self.applied_gain_db,
+                            "available_low_gains_db": self.available_low_gains_db,
+                                "requested_gain_db": self.gain,
+                                "applied_gain_db": self.applied_gain_db,
+                                "available_low_gains_db": self.available_low_gains_db,
                                 "rms": result.get("input_rms"),
                                 "cp_quality": result.get("input_cp_quality"),
                                 "pilot_coherence": result.get(
@@ -280,10 +290,30 @@ class ExperimentalLiveReceiver(QThread):
             PpmCorrection().apply(device, self.ppm)
             device.center_freq = self.frequency_hz
             device.gain = self.gain
+            supported = [
+                float(v) for v in getattr(device, "valid_gains_db", [])
+            ]
+            self.available_low_gains_db = sorted({
+                v for v in supported if v <= 0
+            })
+            selected = (
+                min(supported, key=lambda v: abs(v - self.gain))
+                if supported else self.gain
+            )
+            # Reading back the selected tuner gain is safe here, before
+            # beginning synchronous USB samples. Fall back to pyrtlsdr's
+            # documented nearest-supported-gain selection if unavailable.
+            try:
+                self.applied_gain_db = float(device.gain)
+            except (AttributeError, TypeError, ValueError):
+                self.applied_gain_db = selected
             self.status.emit(
-                f"EXPERIMENTAL live 1seg: {self.frequency_hz/1e6:.6f} MHz "
-                f"gain {self.gain:g} dB. Buffering {self.chunk_seconds:g}s "
-                "I/Q windows; playback and continuity NOT guaranteed."
+                f"EXPERIMENTAL live 1seg: {self.frequency_hz/1e6:.6f} MHz; "
+                f"requested gain {self.gain:g}, "
+                f"applied {self.applied_gain_db:g} dB. "
+                f"Supported low gains: {self.available_low_gains_db}. "
+                f"Buffering {self.chunk_seconds:g}s I/Q; "
+                "video continuity NOT guaranteed."
             )
 
             ordinal = 0
