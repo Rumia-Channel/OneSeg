@@ -107,3 +107,49 @@ def test_failed_live_window_surfaces_actual_adc_and_stage_bottleneck():
     assert "Latest window FAILED" in window.live_metrics.text()
     assert "no parity-verified TMCC frames" in window.video.text()
     window.close()
+
+
+
+def test_gui_exposes_copyable_live_log_path_and_automatic_gain_survey(
+    tmp_path, monkeypatch,
+):
+    from PySide6.QtWidgets import QMessageBox
+    from oneseg.gui import GainSurveyWorker
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.mode.setCurrentIndex(window.mode.findData("oneseg"))
+    assert window.survey_btn.isEnabled()
+    path = tmp_path / "oneseg_live_2026.jsonl"
+    window._live_log_ready(str(path))
+    assert str(path) in window.log_label.text()
+    window._copy_log_path()
+    assert app.clipboard().text() == str(path)
+
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+    launches = []
+    monkeypatch.setattr(
+        GainSurveyWorker, "start",
+        lambda self: launches.append((self.channel, self.ppm))
+    )
+    window.channel.setValue(20)
+    window.ppm.setValue(0)
+    window._toggle_gain_survey()
+    assert launches == [(20, 0)]
+    assert window.survey is not None
+    assert not window.live_btn.isEnabled()
+    assert not window.start_btn.isEnabled()
+    assert window.survey_btn.text() == "Stop automatic gain survey"
+    window._survey_succeeded({
+        "windows": [{}, {}],
+        "promising_gain_for_manual_retest_db": None,
+        "report_json": str(tmp_path / "report.json"),
+        "log_jsonl": str(path),
+    })
+    assert "No gain met" in window.live_metrics.text()
+    window._survey_finished()
+    assert window.survey is None
+    assert window.live_btn.isEnabled()
+    window.close()
