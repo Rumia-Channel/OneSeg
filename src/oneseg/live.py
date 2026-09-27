@@ -194,6 +194,11 @@ class ExperimentalLiveReceiver(QThread):
                                     or raw_clipping > 5.0
                                 ),
                                 "fullscale_percent": raw_clipping,
+                                "rms": result.get("input_rms"),
+                                "cp_quality": result.get("input_cp_quality"),
+                                "pilot_coherence": result.get(
+                                    "input_pilot_coherence"
+                                ),
                                 "windows_failed": missing,
                                 "usb_window_seconds": capture_elapsed,
                                 "decoder_window_seconds": round(
@@ -211,6 +216,7 @@ class ExperimentalLiveReceiver(QThread):
                             )
                     except Exception as exc:
                         missing += 1
+                        details = getattr(exc, "diagnostics", {})
                         self.progress.emit({
                             "accepted_total": decoded,
                             "accepted_chunk": 0,
@@ -221,6 +227,11 @@ class ExperimentalLiveReceiver(QThread):
                                 raw_clipping is not None and raw_clipping > 5.0
                             ),
                             "fullscale_percent": raw_clipping,
+                            "rms": details.get("iq_rms"),
+                            "cp_quality": details.get("cp_quality"),
+                            "pilot_coherence": details.get(
+                                "pilot_coherence"
+                            ),
                             "windows_failed": missing,
                             "usb_window_seconds": capture_elapsed,
                             "decoder_window_seconds": round(
