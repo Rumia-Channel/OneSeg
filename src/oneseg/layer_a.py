@@ -66,6 +66,7 @@ def save_layer_a_fixture(
     pilot_phase: int,
     tmcc_frames: list[dict],
     integer_offset_bins: int,
+    compress: bool = True,
 ):
     """Save carrier symbols and BCH-verified frame-start annotations.
 
@@ -95,7 +96,8 @@ def save_layer_a_fixture(
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as destination:
-        np.savez_compressed(
+        writer = np.savez_compressed if compress else np.savez
+        writer(
             destination,
             equalized_payload_carriers=payload,
             verified_tmcc_frame_start_fft_rows=frame_fft_rows,
