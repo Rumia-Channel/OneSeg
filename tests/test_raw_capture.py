@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from oneseg.continuous import CaptureCancelled, READ_SAMPLES
-from oneseg.raw_capture import record_raw_window, expand_raw_to_c64
+from oneseg.raw_capture import record_raw_window, expand_raw_to_c64, raw_fullscale_percent
 
 
 class Device:
@@ -88,3 +88,14 @@ def test_incomplete_raw_iq_pair_is_rejected(tmp_path):
     raw.write_bytes(b"\x00\x01\x02")
     with pytest.raises(ValueError, match="incomplete"):
         expand_raw_to_c64(raw, tmp_path / "new.c64", metadata={})
+
+
+
+def test_raw_fullscale_fraction_uses_either_i_or_q(tmp_path):
+    p = tmp_path / "read.u8iq"
+    p.write_bytes(bytes((0, 127, 126, 255, 128, 128, 254, 1)))
+    assert raw_fullscale_percent(p) == pytest.approx(50.0)
+    odd = tmp_path / "odd.u8iq"
+    odd.write_bytes(b"\\x00\\x01\\x02")
+    with pytest.raises(ValueError, match="component count"):
+        raw_fullscale_percent(odd)
