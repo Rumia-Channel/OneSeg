@@ -86,3 +86,33 @@ def test_reject_bad_capacity_and_invalid_log(tmp_path):
     invalid.write_text("{bad}\n{}\n")
     with pytest.raises(ValueError):
         summarize_log(invalid)
+
+
+
+def test_old_survey_log_with_false_zero_getter_is_regrouped(tmp_path):
+    """Old 2026-09-27 JSONL must not silently collapse all gains into zero."""
+    with SessionTelemetry(tmp_path) as logger:
+        logger.emit(
+            "survey_gain_plan",
+            supported_gains_db=[-9.9, -7.3, -6.5, -5.4],
+        )
+        for index, (gain, packets) in enumerate(
+            ((-9.9, 261), (-7.3, 142), (-6.5, 106), (-6.5, 269))
+        ):
+            logger.emit(
+                "window_result", window=index,
+                metrics={
+                    "gain_requested_db": gain,
+                    "applied_gain_db": 0.0,
+                    "accepted_chunk": packets,
+                    "tmcc_parity_verified_frames": 2,
+                    "fullscale_percent": 1.1,
+                },
+                checks={},
+            )
+    summary = summarize_log(logger.path)
+    assert summary["legacy_gain_readback_mismatches_regrouped"] == 4
+    assert summary["by_applied_gain"]["-9.9"]["accepted_ts"] == 261
+    assert summary["by_applied_gain"]["-7.3"]["accepted_ts"] == 142
+    assert summary["by_applied_gain"]["-6.5"]["accepted_ts"] == 375
+    assert "0" not in summary["by_applied_gain"]
