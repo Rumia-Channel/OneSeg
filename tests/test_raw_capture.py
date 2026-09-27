@@ -96,6 +96,6 @@ def test_raw_fullscale_fraction_uses_either_i_or_q(tmp_path):
     p.write_bytes(bytes((0, 127, 126, 255, 128, 128, 254, 1)))
     assert raw_fullscale_percent(p) == pytest.approx(50.0)
     odd = tmp_path / "odd.u8iq"
-    odd.write_bytes(b"\\x00\\x01\\x02")
+    odd.write_bytes(bytes((0, 1, 2)))
     with pytest.raises(ValueError, match="component count"):
         raw_fullscale_percent(odd)
