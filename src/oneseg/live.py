@@ -21,7 +21,7 @@ from typing import Callable
 from PySide6.QtCore import QThread, Signal
 
 from .continuous import CaptureCancelled
-from .raw_capture import record_raw_window, expand_raw_to_c64
+from .raw_capture import record_raw_window, expand_raw_to_c64, raw_fullscale_percent
 from .decode import decode_capture
 from .dsp import DEFAULT_SAMPLE_RATE
 from .ppm import PpmCorrection
@@ -158,8 +158,12 @@ class ExperimentalLiveReceiver(QThread):
                     iq = item.with_suffix(".c64")
                     capture_elapsed = capture_timings.pop(item, None)
                     decode_started = perf_counter()
+                    raw_clipping = None
                     try:
                         if not self.stop_event.is_set():
+                            # Measure overload independently of TMCC success:
+                            # failed decode windows also need RF diagnostics.
+                            raw_clipping = raw_fullscale_percent(item)
                             # The potentially CPU-intensive u8->float
                             # conversion is outside the USB reader thread.
                             expand_raw_to_c64(
@@ -185,7 +189,11 @@ class ExperimentalLiveReceiver(QThread):
                                 "rejected_chunk": result["rejected_rs_or_invalid_ts_packets"],
                                 "has_pat": bool(result["pat_programs"]),
                                 "has_pmt": bool(result["pmt_elementary_streams"]),
-                                "overloaded": bool(result["input_overload_warning"]),
+                                "overloaded": (
+                                    bool(result["input_overload_warning"])
+                                    or raw_clipping > 5.0
+                                ),
+                                "fullscale_percent": raw_clipping,
                                 "windows_failed": missing,
                                 "usb_window_seconds": capture_elapsed,
                                 "decoder_window_seconds": round(
@@ -202,6 +210,24 @@ class ExperimentalLiveReceiver(QThread):
                             )
                     except Exception as exc:
                         missing += 1
+                        self.progress.emit({
+                            "accepted_total": decoded,
+                            "accepted_chunk": 0,
+                            "rejected_chunk": 0,
+                            "has_pat": False,
+                            "has_pmt": False,
+                            "overloaded": (
+                                raw_clipping is not None and raw_clipping > 5.0
+                            ),
+                            "fullscale_percent": raw_clipping,
+                            "windows_failed": missing,
+                            "usb_window_seconds": capture_elapsed,
+                            "decoder_window_seconds": round(
+                                perf_counter() - decode_started, 2
+                            ),
+                            "queued_windows": capture_queue.qsize(),
+                            "failure_reason": f"{type(exc).__name__}: {exc}",
+                        })
                         self.status.emit(
                             f"Live window rejected ({type(exc).__name__}: {exc}); "
                             "continuing RF reads; no fake TS packets."
