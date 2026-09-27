@@ -25,6 +25,7 @@ from .raw_capture import record_raw_window, expand_raw_to_c64, raw_fullscale_per
 from .decode import decode_capture
 from .dsp import DEFAULT_SAMPLE_RATE
 from .ppm import PpmCorrection
+from .telemetry import SessionTelemetry, check_window
 
 
 class LiveTsBuffer(RawIOBase):
@@ -104,6 +105,7 @@ class ExperimentalLiveReceiver(QThread):
     failed = Signal(str)
     transport = Signal(bytes)
     progress = Signal(object)
+    log_ready = Signal(str)
 
     def __init__(
         self,
@@ -133,9 +135,16 @@ class ExperimentalLiveReceiver(QThread):
         self.device_factory = device_factory
         self.decode_function = decode_function
         self.stop_event = Event()
+        self.telemetry: SessionTelemetry | None = None
+        self.log_path: Path | None = None
 
     def stop(self):
         self.stop_event.set()
+
+    def record_event(self, event: str, **details):
+        """GUI/playback events use the same metadata-only live session log."""
+        if self.telemetry is not None:
+            self.telemetry.emit(event, **details)
 
     def run(self):
         device = None
@@ -147,6 +156,19 @@ class ExperimentalLiveReceiver(QThread):
         capture_timings: dict[Path, float] = {}
 
         try:
+            self.telemetry = SessionTelemetry()
+            self.log_path = self.telemetry.path
+            self.log_ready.emit(str(self.log_path))
+            self.record_event(
+                "session_start",
+                center_frequency_hz=self.frequency_hz,
+                sample_rate_hz=DEFAULT_SAMPLE_RATE,
+                requested_gain_db=self.gain,
+                ppm=self.ppm,
+                raw_window_seconds=self.chunk_seconds,
+                max_ofdm_symbols=self.max_ofdm_symbols,
+                live_video_verified=False,
+            )
             temporary = TemporaryDirectory(prefix="oneseg-live-")
             root = Path(temporary.name)
 
@@ -158,6 +180,7 @@ class ExperimentalLiveReceiver(QThread):
                         return
                     target = item.with_suffix(".ts")
                     iq = item.with_suffix(".c64")
+                    window_number = int(item.stem.rsplit("_", 1)[-1])
                     capture_elapsed = capture_timings.pop(item, None)
                     decode_started = perf_counter()
                     raw_clipping = None
@@ -187,7 +210,7 @@ class ExperimentalLiveReceiver(QThread):
                             if len(data) != 188 * result["rs_and_ts_accepted_packets"]:
                                 raise IOError("recovered TS byte count mismatch")
                             decoded += result["rs_and_ts_accepted_packets"]
-                            self.progress.emit({
+                            metrics = {
                                 "accepted_total": decoded,
                                 "accepted_chunk": result["rs_and_ts_accepted_packets"],
                                 "rejected_chunk": result["rejected_rs_or_invalid_ts_packets"],
@@ -198,9 +221,6 @@ class ExperimentalLiveReceiver(QThread):
                                     or raw_clipping > 5.0
                                 ),
                                 "fullscale_percent": raw_clipping,
-                            "requested_gain_db": self.gain,
-                            "applied_gain_db": self.applied_gain_db,
-                            "available_low_gains_db": self.available_low_gains_db,
                                 "requested_gain_db": self.gain,
                                 "applied_gain_db": self.applied_gain_db,
                                 "available_low_gains_db": self.available_low_gains_db,
@@ -210,13 +230,31 @@ class ExperimentalLiveReceiver(QThread):
                                     "input_pilot_coherence"
                                 ),
                                 "windows_failed": missing,
+                                "window_seconds": self.chunk_seconds,
+                                "tmcc_parity_verified_frames": result.get(
+                                    "tmcc_parity_verified_frames"
+                                ),
+                                "source_tmcc_carrier": result.get(
+                                    "tmcc_soft_source"
+                                ),
+                                "rs_phase": result.get(
+                                    "prbs_phase_within_64_packets"
+                                ),
+                                "pid_packet_counts": result.get(
+                                    "pid_packet_counts", {}
+                                ),
                                 "usb_window_seconds": capture_elapsed,
                                 "decoder_window_seconds": round(
                                     perf_counter() - decode_started, 2
                                 ),
                                 "stage_seconds": result.get("stage_seconds", {}),
                                 "queued_windows": capture_queue.qsize(),
-                            })
+                            }
+                            self.record_event(
+                                "window_result", window=window_number,
+                                metrics=metrics, checks=check_window(metrics),
+                            )
+                            self.progress.emit(metrics)
                             self.transport.emit(data)
                             self.status.emit(
                                 f"LIVE EXPERIMENT: {decoded} genuine TS packets; "
@@ -227,12 +265,12 @@ class ExperimentalLiveReceiver(QThread):
                     except Exception as exc:
                         missing += 1
                         details = getattr(exc, "diagnostics", {})
-                        self.progress.emit({
+                        metrics = {
                             "accepted_total": decoded,
                             "accepted_chunk": 0,
                             "rejected_chunk": 0,
-                            "has_pat": False,
-                            "has_pmt": False,
+                            "has_pat": None,
+                            "has_pmt": None,
                             "overloaded": (
                                 raw_clipping is not None and raw_clipping > 5.0
                             ),
@@ -243,13 +281,25 @@ class ExperimentalLiveReceiver(QThread):
                                 "pilot_coherence"
                             ),
                             "windows_failed": missing,
+                            "window_seconds": self.chunk_seconds,
+                            "tmcc_parity_verified_frames": details.get(
+                                "tmcc_parity_verified_frames"
+                            ),
+                            "source_tmcc_carrier": details.get(
+                                "tmcc_soft_source"
+                            ),
                             "usb_window_seconds": capture_elapsed,
                             "decoder_window_seconds": round(
                                 perf_counter() - decode_started, 2
                             ),
                             "queued_windows": capture_queue.qsize(),
                             "failure_reason": f"{type(exc).__name__}: {exc}",
-                        })
+                        }
+                        self.record_event(
+                            "window_result", window=window_number,
+                            metrics=metrics, checks=check_window(metrics),
+                        )
+                        self.progress.emit(metrics)
                         self.status.emit(
                             f"Live window rejected ({type(exc).__name__}: {exc}); "
                             "continuing RF reads; no fake TS packets."
@@ -307,6 +357,12 @@ class ExperimentalLiveReceiver(QThread):
                 self.applied_gain_db = float(device.gain)
             except (AttributeError, TypeError, ValueError):
                 self.applied_gain_db = selected
+            self.record_event(
+                "tuner_opened", requested_gain_db=self.gain,
+                applied_gain_db=self.applied_gain_db,
+                supported_low_gains_db=self.available_low_gains_db,
+                center_frequency_hz=self.frequency_hz,
+            )
             self.status.emit(
                 f"EXPERIMENTAL live 1seg: {self.frequency_hz/1e6:.6f} MHz; "
                 f"requested gain {self.gain:g}, "
@@ -333,9 +389,22 @@ class ExperimentalLiveReceiver(QThread):
                     capture_timings[capture] = round(
                         perf_counter() - capture_started, 2
                     )
+                    self.record_event(
+                        "usb_window", window=ordinal - 1,
+                        elapsed_s=capture_timings[capture],
+                        raw_iq_bytes=capture.stat().st_size,
+                        pending_windows=capture_queue.qsize(),
+                        requested_gain_db=self.gain,
+                        applied_gain_db=self.applied_gain_db,
+                    )
                 except CaptureCancelled:
                     break
                 except Exception as exc:
+                    self.record_event(
+                        "usb_failure", window=ordinal-1,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
                     self.failed.emit(
                         f"RTL-SDR live USB capture failed: {exc}"
                     )
@@ -344,6 +413,10 @@ class ExperimentalLiveReceiver(QThread):
                     capture_queue.put_nowait(capture)
                 except Full:
                     missing += 1
+                    self.record_event(
+                        "window_dropped", window=ordinal - 1,
+                        cause="dsp_backlog", queue_size=capture_queue.qsize(),
+                    )
                     capture_timings.pop(capture, None)
                     capture.unlink(missing_ok=True)
                     capture.with_name(
@@ -356,6 +429,9 @@ class ExperimentalLiveReceiver(QThread):
                     )
                     # Never block the USB read loop to wait for DSP.
         except Exception as exc:
+            self.record_event(
+                "session_error", error_type=type(exc).__name__, error=str(exc)
+            )
             self.failed.emit(f"Could not start live RTL-SDR: {exc}")
         finally:
             # The only thread that opens the tuner also closes it; do not
@@ -388,6 +464,18 @@ class ExperimentalLiveReceiver(QThread):
                 decoder.join()
             if temporary is not None:
                 temporary.cleanup()
+            self.record_event(
+                "session_stop", accepted_ts_packets=decoded,
+                failed_or_dropped_windows=missing,
+                rendered_video_not_verified=True,
+            )
+            if self.telemetry is not None:
+                self.telemetry.close()
+                if self.telemetry.error:
+                    self.status.emit(
+                        f"Diagnostic log write error: {self.telemetry.error}"
+                    )
+                self.telemetry = None
             self.status.emit(
                 f"Experimental live session ended: {decoded} "
                 "real TS packets; NOT a confirmed gapless TV receiver."
