@@ -166,6 +166,68 @@ def tmcc_differential_soft_bits(equalized: np.ndarray) -> np.ndarray:
     return np.mean(unit.real, axis=1).astype(np.float32)
 
 
+def tmcc_carrier_soft_bits(equalized: np.ndarray) -> np.ndarray:
+    """Separate DBPSK confidence streams from four redundant TMCC carriers.
+
+    A noisy/faded carrier must not corrupt the other three when the
+    receiver averages their signs before checking TMCC parity. Each
+    candidate MUST independently pass the protected 82-bit syndrome;
+    a stronger sync correlation alone is not confirmation.
+    """
+    equalized = np.asarray(equalized)
+    if equalized.ndim != 2 or equalized.shape[1] != ACTIVE:
+        raise ValueError("expected equalized (N,433) central symbols")
+    data = equalized[:, TMCC_CARRIERS]
+    differentials = data[1:] * np.conj(data[:-1])
+    unit = differentials / np.maximum(
+        np.abs(differentials), 1e-12
+    )
+    return unit.real.astype(np.float32)
+
+
+def select_tmcc_soft_stream(
+    equalized: np.ndarray,
+) -> tuple[np.ndarray, dict]:
+    """Select a TMCC stream by actual parity-verified frames, not RF energy.
+
+    Preserve the existing combined 4-carrier stream on ties. Testing
+    carriers individually is useful when gain overload, multi-path or
+    narrowband interference damages only some TMCC carrier frequencies.
+    It cannot correct errors or compensate for missing OFDM symbols.
+    """
+    carriers = tmcc_carrier_soft_bits(equalized)
+    streams = [("combined", np.mean(carriers, axis=1).astype(np.float32))]
+    streams += [
+        (f"carrier_{int(carrier)}", carriers[:, index])
+        for index, carrier in enumerate(TMCC_CARRIERS)
+    ]
+    winner = None
+    highest = (-1, -1)
+    counts = {}
+    for name, soft in streams:
+        checked = verify_frames_from_soft(soft)
+        starts = {
+            int(frame["frame_start_bit_index"])
+            for frame in checked["bch_parity_verified_frames"]
+        }
+        repeated = sum(start + 204 in starts for start in starts)
+        count = len(checked["bch_parity_verified_frames"])
+        counts[name] = count
+        score = (repeated, count)
+        if score > highest:
+            highest = score
+            winner = (name, soft, checked)
+    name, soft, checked = winner
+    result = {
+        **candidate_tmcc_sync(soft),
+        **checked,
+        "tmcc_soft_source": name,
+        "tmcc_per_carrier_verified_counts": counts,
+        "tmcc_repeated_verified_pairs": highest[0],
+    }
+    return soft, result
+
+
 def candidate_tmcc_sync(soft: np.ndarray, *, max_errors: int = 2) -> dict:
     """Look for repeated 16-bit sync patterns 204 symbols apart.
 
@@ -243,7 +305,7 @@ def analyze_capture(
         raise ValueError("need enough OFDM symbols for repeated TMCC sync")
     alignment = find_pilot_alignment(fft)
     equalized = equalize_segment(fft, alignment)
-    soft = tmcc_differential_soft_bits(equalized)
+    soft, tmcc_result = select_tmcc_soft_stream(equalized)
     result = {
         "capture": path.name,
         "center_frequency_hz": metadata["center_frequency_hz"],
@@ -260,8 +322,7 @@ def analyze_capture(
         "integer_offset_hz": alignment.integer_offset_hz,
         "combined_offset_hz": alignment.integer_offset_hz + lock.coarse_cfo_hz,
         "signal_stage": "pilot carrier alignment + DBPSK TMCC sync and cyclic parity verification; no TS",
-        **candidate_tmcc_sync(soft),
-        **verify_frames_from_soft(soft),
+        **tmcc_result,
     }
     if layer_a_output is not None:
         from .layer_a import extract_layer_a_carriers, save_layer_a_fixture
@@ -315,7 +376,8 @@ def main() -> int:
     print(
         f"TMCC sync candidates: {report['single_sync_candidates']} singles, "
         f"{len(report['repeated_sync_candidates'])} repeated; "
-        f"{len(report['bch_parity_verified_frames'])} cyclic-parity-verified frames. "
+        f"{len(report['bch_parity_verified_frames'])} cyclic-parity-verified frames "
+        f"(source: {report['tmcc_soft_source']}). "
         "Bit-error correction NOT IMPLEMENTED; MPEG-TS NOT RECOVERED."
     )
     if report.get("layer_a_fixture"):
