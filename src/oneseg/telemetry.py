@@ -71,7 +71,7 @@ def check_window(report: dict) -> dict[str, dict]:
         "at least one protected zero-syndrome TMCC frame",
         "no 82-bit parity-verified TMCC frame",
     )
-    accepted = report.get("accepted_chunk") if count is not None else None
+    accepted = report.get("accepted_chunk") if count is not None and count > 0 else None
     check(
         "rs_ts", accepted, lambda x: x >= 1, lambda x: x == 0,
         "one or more genuine RS-verified 188-byte packets",
