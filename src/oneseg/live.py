@@ -237,6 +237,21 @@ class ExperimentalLiveReceiver(QThread):
                                 "source_tmcc_carrier": result.get(
                                     "tmcc_soft_source"
                                 ),
+                                "per_carrier_verified_counts": result.get(
+                                    "tmcc_per_carrier_verified_counts"
+                                ),
+                                "tmcc_sync_candidates": result.get(
+                                    "tmcc_sync_candidates"
+                                ),
+                                "integer_offset_bins": result.get(
+                                    "integer_offset_bins"
+                                ),
+                                "fractional_cfo_hz": result.get(
+                                    "fractional_cfo_hz"
+                                ),
+                                "transport_continuity_errors": result.get(
+                                    "continuity_errors_due_to_missing_or_bad_packets"
+                                ),
                                 "rs_phase": result.get(
                                     "prbs_phase_within_64_packets"
                                 ),
@@ -288,6 +303,19 @@ class ExperimentalLiveReceiver(QThread):
                             "source_tmcc_carrier": details.get(
                                 "tmcc_soft_source"
                             ),
+                            "per_carrier_verified_counts": details.get(
+                                "tmcc_per_carrier_verified_counts"
+                            ),
+                            "tmcc_sync_candidates": details.get(
+                                "single_sync_candidates"
+                            ),
+                            "integer_offset_bins": details.get(
+                                "integer_offset_bins"
+                            ),
+                            "fractional_cfo_hz": details.get(
+                                "fractional_cfo_hz"
+                            ),
+                            "failed_stage": details.get("failed_stage"),
                             "usb_window_seconds": capture_elapsed,
                             "decoder_window_seconds": round(
                                 perf_counter() - decode_started, 2
