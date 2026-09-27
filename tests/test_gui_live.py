@@ -78,3 +78,28 @@ def test_live_not_available_with_automatic_gain_or_sdr_mode():
     window.mode.setCurrentIndex(window.mode.findData("sdr"))
     assert not window.live_btn.isEnabled()
     window.close()
+
+
+
+def test_failed_live_window_surfaces_actual_adc_and_stage_bottleneck():
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window._live_progress({
+        "accepted_total": 29,
+        "accepted_chunk": 0,
+        "rejected_chunk": 0,
+        "windows_failed": 2,
+        "has_pat": False,
+        "has_pmt": False,
+        "overloaded": True,
+        "fullscale_percent": 11.32,
+        "usb_window_seconds": 3.02,
+        "decoder_window_seconds": 5.83,
+        "queued_windows": 1,
+        "failure_reason": "ValueError: no parity-verified TMCC frames",
+    })
+    assert "11.32%" in window.live_metrics.text()
+    assert "DSP 5.83s" in window.live_metrics.text()
+    assert "Latest window FAILED" in window.live_metrics.text()
+    assert "no parity-verified TMCC frames" in window.video.text()
+    window.close()
