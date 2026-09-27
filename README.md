@@ -967,3 +967,40 @@ issue, first share `extract_manifest.json`,
 and `partial.ts` + `.ts.json`, then
 the large `iq.c64` and adjacent `.c64.json`
 only for captures whose DSP failure needs a waveform.
+
+
+## Automatic live diagnostics ZIP: no screenshots needed (2026-09-27)
+
+Every **Watch 1seg LIVE (experimental)** run already produces a local
+timestamped JSONL log. After pressing **Stop**, the GUI now automatically
+packages that JSONL, a complete summary and representative real I/Q into
+one ZIP and displays its full path. Click **Copy live diagnostic file path**
+and attach that ZIP to the chat; no manual RF capture, CSV or screenshots.
+
+Location: `%USERPROFILE%\OneSeg\logs\`.
+ZIP name: `oneseg_live_<session>.diagnostics.zip`.
+The ZIP contains `session.jsonl`, `report.json`, at most one actual
+`first_failure_window_NNNNNN.u8iq` and one actual
+`first_success_window_NNNNNN.u8iq`, each with `.u8iq.json` metadata.
+The successful example may also include a real partial `.ts`, only if
+RS-verified MPEG-TS packets were recovered. Additional windows are
+recorded as JSONL measurements without copying unlimited RF samples.
+
+The u8iq samples are unsigned 8-bit *interleaved I,Q*, NOT complex64;
+the adjacent JSON explains sampling rate, center frequency, tuner
+gain, clipping, CP, pilot/TMCC diagnostics and exact window index.
+At 2.048MS/s, a 3s raw window is 12,288,000 bytes. At most TWO
+such windows (~24.6 MB total) are retained per live session.
+The decoder thread performs the extra copy AFTER the USB read.
+ZIP_STORED packaging avoids a costly compression pass.
+
+No data is uploaded automatically; the bundle stays on the user's
+computer until shared explicitly. Raw I/Q may include received
+broadcast content, and diagnostic JSON can contain local paths.
+If a process dies before Stop, the already-flushed JSONL and
+any loose `.diagnostics` examples remain even without a final ZIP.
+
+After `git pull` / `uv sync`, start `uv run oneseg`, perform a live
+20ch test, press Stop and send the ZIP instead of another screenshot.
+Automated evidence collection does NOT itself fix the existing
+3-second receiver-state discontinuities or guarantee live TV playback.
