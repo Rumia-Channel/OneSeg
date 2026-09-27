@@ -5,8 +5,9 @@ live video. Each allowed hardware gain gets independent 3s windows. The
 study checks raw ADC level, OFDM, pilot phase, protected TMCC and actual
 RS-validated MPEG-TS before reporting evidence for a possible retest.
 
-No I/Q or TS bytes are stored permanently. Only JSONL metadata and a
-summary JSON are retained. Native asynchronous USB is never used.
+A bounded successful and failed real I/Q example and genuine TS may
+be retained in an automatic diagnostic ZIP with the JSONL/report.
+Native asynchronous USB is never used.
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ from .raw_capture import (
     expand_raw_to_c64, raw_fullscale_percent, record_raw_window,
 )
 from .telemetry import SessionTelemetry, check_window, utc_now
+from .diagnostic_bundle import DiagnosticBundle
 
 FALLBACK_NEGATIVE_GAINS = (-9.9, -7.3, -6.5, -6.3, -6.0, -5.8, -5.4)
 
@@ -108,10 +110,12 @@ def run_gain_survey(
         device_factory = RtlSdr
     device = None
     log = None
+    bundle = None
     results = []
     report = None
     try:
         log = SessionTelemetry(log_directory)
+        bundle = DiagnosticBundle(log.path)
         output = (
             Path(output) if output is not None
             else log.path.with_suffix(".survey.json")
@@ -278,6 +282,31 @@ def run_gain_survey(
                             error=measurement["failure_reason"],
                         )
                     finally:
+                        # Preserve actual first failed/successful IQ BEFORE
+                        # temporary survey windows are deleted. No capture
+                        # copies occur inside the USB acquisition loop.
+                        if bundle is not None and raw.is_file():
+                            category = (
+                                "first_success"
+                                if (measurement.get("accepted_chunk") or 0) > 0
+                                else "first_failure"
+                            )
+                            example = bundle.save_example(
+                                category, raw, window=index,
+                                metrics={
+                                    **measurement,
+                                    "center_frequency_hz":
+                                        physical_channel_hz(channel),
+                                    "ppm": ppm,
+                                    "requested_gain_db": gain,
+                                },
+                                ts=ts if category == "first_success" else None,
+                            )
+                            if example is not None:
+                                log.emit(
+                                    "survey_example_saved",
+                                    window=index, example=example,
+                                )
                         for path in (
                             raw, raw.with_name(raw.name + ".partial"),
                             c64, c64.with_suffix(".c64.json"),
@@ -353,6 +382,7 @@ def run_gain_survey(
                 ),
                 "log_jsonl": str(log.path),
                 "report_json": str(output),
+                "diagnostic_zip": str(bundle.bundle_path),
                 "windows": results,
                 "by_gain": groups,
                 "promising_gain_for_manual_retest_db": recommendation,
@@ -385,6 +415,37 @@ def run_gain_survey(
             device.close()
         if log is not None:
             log.close()
+        if bundle is not None:
+            try:
+                bundle.finish(
+                    survey_report=output
+                    if output is not None and Path(output).is_file()
+                    else None
+                )
+            except Exception as exc:
+                if report is not None:
+                    report["diagnostic_zip_error"] = (
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    report["diagnostic_zip"] = None
+                    # The JSONL and any loose examples remain intact.
+                    Path(output).write_text(
+                        json.dumps(
+                            report, ensure_ascii=False, indent=2,
+                            allow_nan=False,
+                        ),
+                        encoding="utf-8",
+                    )
+                if progress:
+                    progress(
+                        "Diagnostic ZIP could not be created; survey JSONL "
+                        f"and loose examples remain: {exc}"
+                    )
+            else:
+                if progress:
+                    progress(
+                        f"Automatic survey diagnostic ZIP: {bundle.bundle_path}"
+                    )
     return report
 
 
@@ -414,6 +475,8 @@ def main() -> int:
         parser.exit(2, f"Gain survey failed: {exc}\n")
     print(f"Result: {result['report_json']}")
     print(f"Full event log: {result['log_jsonl']}")
+    if result.get("diagnostic_zip"):
+        print(f"Shareable diagnostic ZIP: {result['diagnostic_zip']}")
     if result["promising_gain_for_manual_retest_db"] is None:
         print("No validated gain for retest; do not infer TV reception.")
     else:
