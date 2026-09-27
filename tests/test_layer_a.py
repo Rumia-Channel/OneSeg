@@ -80,3 +80,26 @@ def test_invalid_shape_or_phase():
         data_carrier_indices(-1)
     with pytest.raises(ValueError):
         data_carrier_indices(0, -1)
+
+
+
+def test_uncompressed_temporary_layer_a_has_identical_values(tmp_path):
+    import zipfile
+
+    symbols = np.arange(480 * 384, dtype=np.float32).reshape(480, 384)
+    symbols = (symbols + 1j * (symbols / 7)).astype(np.complex64)
+    verified = [{"frame_start_bit_index": 8, "bch_parity_verified": True}]
+    zipped = tmp_path / "zipped.npz"
+    quick = tmp_path / "quick.npz"
+    for path, compress in ((zipped, True), (quick, False)):
+        save_layer_a_fixture(
+            path, payload=symbols, pilot_phase=3,
+            tmcc_frames=verified, integer_offset_bins=12,
+            compress=compress,
+        )
+    with zipfile.ZipFile(quick) as z:
+        assert all(x.compress_type == zipfile.ZIP_STORED for x in z.infolist())
+    with np.load(zipped, allow_pickle=False) as slow:
+        with np.load(quick, allow_pickle=False) as fast:
+            for key in slow.files:
+                np.testing.assert_array_equal(slow[key], fast[key])
