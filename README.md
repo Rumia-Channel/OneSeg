@@ -625,3 +625,47 @@ Select 1seg mode, 20ch, manual gain 0 dB, Automatic OFF, then press
 **Watch 1seg LIVE (experimental)** directly, not Start receiver.
 Check the LIVE metrics after 20–30 seconds and record whether USB reads
 complete, DSP falls behind, PAT/PMT appear, or a real video frame renders.
+
+
+## Live trial 2: DSP backlog plus RF overload (2026-09-27)
+
+The next Windows 11 screenshot confirms the low-overhead raw-u8 USB
+capture fixed the prior **I/Q writer queue overran** failure: the tuner
+continued acquiring 3-second windows. On **20ch, gain 0 dB, 0 ppm**,
+the GUI reported:
+
+- 29 genuine RS-validated 188-byte TS packets;
+- 660 rejected candidate blocks and two failed decode windows
+  (`no parity-verified TMCC frames` on the latest);
+- **ADC OVERLOADED**, above 5% full-scale occupancy;
+- USB ~3.02 seconds and decoder/DSP ~5.83 seconds per 3-second window;
+- one pending window, PAT and PMT absent, zero video frames.
+
+These are two distinct bottlenecks. Excessive RF gain can corrupt TMCC
+and QPSK; the user should **Stop LIVE**, reduce manual FC0013 gain
+(start with the previously tested -9.9 dB on strong 20ch), and retry.
+Changing RF gain is an RF-quality test, not a fix for CPU saturation.
+A DSP/window duration above 3 seconds is *not sustainable*; the
+two-window queue will eventually overflow even if the RF signal is
+perfect. More USB or a longer buffer cannot fix this rate mismatch.
+
+To reduce redundant DSP work, the `oneseg-decode` live/offline
+orchestrator now uses **uncompressed temporary NPZ files** while
+preserving the previous compressed export behavior of the manual
+`oneseg-pilots` / `oneseg-deinterleave` commands. All fixture
+values/verified frame positions are identical in CI tests; the
+temporary files are cleaned afterward. Pilot channel interpolation
+also handles symbols in four NumPy batches instead of thousands
+of individual per-row calls, preserving the previous result
+within the numerical tolerance tested.
+
+The LIVE metrics also report raw-input exact full-scale percentage
+and failure reason **even for windows whose TMCC does not pass**;
+successful decode windows additionally show measured time spent in
+OFDM/pilots/TMCC, deinterleave, and Viterbi/RS/TS. These are
+diagnostics and optimizations, NOT evidence of stable TV playback.
+The DSP throughput and video/audio output must be remeasured on the
+actual Windows 11/FC0013 machine. If decoder time still exceeds 3
+seconds, the next priority is a persistent streaming pipeline
+preserving FFT timing, deinterleaver, Viterbi, PRBS and TS/PES state
+rather than simply increasing queue sizes or making up PSI packets.
