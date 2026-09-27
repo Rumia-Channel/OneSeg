@@ -10,6 +10,7 @@ import argparse
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import perf_counter
 from typing import Callable
 
 from .deinterleave import process_fixture
@@ -47,6 +48,7 @@ def decode_capture(
         raise ValueError("seconds must be between 0.5 and 3.0")
     if max_ofdm_symbols < 204:
         raise ValueError("max_ofdm_symbols must be >= 204")
+    start = perf_counter()
     if progress:
         progress("Analyzing Mode-3 OFDM and pilot positions (no tuner access)...")
     with TemporaryDirectory(prefix="oneseg-offline-") as temporary:
@@ -58,6 +60,7 @@ def decode_capture(
             capture, seconds=seconds, layer_a_output=layer_a,
             compress_fixture=False,
         )
+        after_pilots = perf_counter()
         frames = report["bch_parity_verified_frames"]
         if not frames:
             raise ValueError(
@@ -75,6 +78,7 @@ def decode_capture(
         stage = process_fixture(
             layer_a, tmcc_path, deinterleaved, compress=False
         )
+        after_deinterleave = perf_counter()
         if progress:
             progress(
                 f"Deinterleaved {stage['output_bit_count']:,} coded bits; "
@@ -85,7 +89,16 @@ def decode_capture(
             output,
             max_ofdm_symbols=max_ofdm_symbols,
         )
+        after_fec = perf_counter()
         summary.update({
+            "stage_seconds": {
+                "ofdm_pilots_tmcc": round(after_pilots - start, 2),
+                "deinterleave": round(
+                    after_deinterleave - after_pilots, 2
+                ),
+                "fec_rs_ts": round(after_fec - after_deinterleave, 2),
+                "total_to_ts": round(after_fec - start, 2),
+            },
             "input_capture": str(capture),
             "input_capture_metadata": str(input_meta),
             "ofdm_mode": report["mode_assumed"],
