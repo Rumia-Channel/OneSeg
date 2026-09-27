@@ -99,3 +99,67 @@ def test_batched_equalization_matches_original_linear_interpolation():
         )
         expected[row] = original[row] / interp
     np.testing.assert_allclose(batch, expected, rtol=2e-5, atol=2e-5)
+
+
+
+def test_individual_tmcc_carrier_recovers_parity_when_three_other_carriers_fail():
+    from oneseg.pilots import (
+        TMCC_SYNC_EVEN, TMCC_SYNC_ODD, TMCC_CARRIERS,
+        select_tmcc_soft_stream,
+    )
+    from oneseg.tmcc import _GENERATOR
+
+    def encoded_frame(sync):
+        frame = np.zeros(204, dtype=np.uint8)
+        frame[1:17] = sync
+        frame[27] = 1
+        frame[28:41] = [
+            0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1
+        ]  # QPSK 2/3 I=4 one segment
+        code = 0
+        for bit in frame[20:122]:
+            code = (code << 1) | int(bit)
+        remainder = code << 82
+        for degree in range(183, 81, -1):
+            if remainder & (1 << degree):
+                remainder ^= _GENERATOR << (degree - 82)
+        frame[122:] = [
+            (remainder >> shift) & 1 for shift in range(81, -1, -1)
+        ]
+        return frame
+
+    bits = np.concatenate([
+        encoded_frame(TMCC_SYNC_EVEN),
+        encoded_frame(TMCC_SYNC_ODD),
+        encoded_frame(TMCC_SYNC_EVEN),
+    ])
+    # Original source is a coherent carrier with known DBPSK symbols.
+    polarity = np.cumprod(
+        (1 - 2 * bits.astype(np.int8)).astype(np.int8)
+    ).astype(np.float32)
+    eq = np.ones((len(bits) + 1, 433), dtype=np.complex64)
+    eq[1:, TMCC_CARRIERS[0]] = polarity
+    rng = np.random.default_rng(823)
+    for carrier in TMCC_CARRIERS[1:]:
+        eq[1:, carrier] = rng.choice(
+            np.array([-1, 1], dtype=np.float32), len(bits)
+        )
+    _, report = select_tmcc_soft_stream(eq)
+    assert report["tmcc_bch_verified"]
+    assert report["tmcc_soft_source"] == f"carrier_{int(TMCC_CARRIERS[0])}"
+    assert len(report["bch_parity_verified_frames"]) == 3
+    assert report["tmcc_repeated_verified_pairs"] == 2
+    assert report["bch_parity_verified_frames"][0]["layer_A"]["segments"] == 1
+
+
+def test_tmcc_source_keeps_combined_reference_on_equal_verified_counts():
+    from oneseg.pilots import (
+        TMCC_CARRIERS, select_tmcc_soft_stream
+    )
+    eq = np.ones((300, 433), dtype=np.complex64)
+    _, report = select_tmcc_soft_stream(eq)
+    assert not report["tmcc_bch_verified"]
+    assert report["tmcc_soft_source"] == "combined"
+    assert set(report["tmcc_per_carrier_verified_counts"]) == {
+        "combined", *(f"carrier_{int(i)}" for i in TMCC_CARRIERS)
+    }
