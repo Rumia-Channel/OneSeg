@@ -12,13 +12,14 @@ dropped USB samples; compare pilots/symbol continuity in real captures.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from queue import Full, Queue
 from threading import Thread
 from typing import Callable
 
 import numpy as np
+
+from .file_output import publish_new_file
 
 READ_SAMPLES = 131_072
 _MAX_QUEUED_BUFFERS = 8
@@ -167,19 +168,24 @@ def record_stream(
         "sample_continuity_verified": False,
         "decoding_status": "RAW_IQ_NOT_TS",
     }
+    owns_partial = owns_sidecar = published = False
     try:
         with partial.open("xb") as destination:
+            owns_partial = True
             stream_exact_samples(
                 device, destination, samples_required, cancelled=cancelled
             )
-        sidecar.write_text(
-            json.dumps(details, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        os.replace(partial, output)
+        with sidecar.open("x", encoding="utf-8") as report:
+            owns_sidecar = True
+            report.write(json.dumps(details, ensure_ascii=False, indent=2))
+        # Atomic no-clobber publication, including a concurrently created file.
+        publish_new_file(partial, output)
+        published = True
+        partial.unlink(missing_ok=True)
         return details
     except Exception:
-        partial.unlink(missing_ok=True)
-        if not output.exists():
+        if owns_partial:
+            partial.unlink(missing_ok=True)
+        if owns_sidecar and not published:
             sidecar.unlink(missing_ok=True)
         raise

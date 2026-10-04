@@ -84,7 +84,7 @@ def test_live_thread_pipeline_with_fake_usb_and_real_decoding_boundary(
 
     fake = Device()
 
-    def fake_raw(device, path, *, samples_required, warmup_buffers, cancelled):
+    def fake_raw(device, path, *, samples_required, warmup_buffers, cancelled, carry):
         assert device is fake
         assert samples_required == 2048000
         assert path.suffix == ".u8iq"
@@ -107,7 +107,7 @@ def test_live_thread_pipeline_with_fake_usb_and_real_decoding_boundary(
         assert source.is_file()
         assert source.with_suffix(".c64.json").is_file()
         assert seconds == 1 and max_ofdm_symbols == 3000
-        target.write_bytes(b"\x47" + b"\0" * 187)
+        target.write_bytes(bytes.fromhex("471fff10") + b"\xff" * 184)
         target.with_suffix(".ts.json").write_text("{}")
         decoded.set()
         return {
@@ -167,7 +167,8 @@ def test_live_thread_pipeline_with_fake_usb_and_real_decoding_boundary(
 
 
 
-def test_fc0013_actual_gain_readback_is_not_requested_float(monkeypatch):
+def test_fc0013_actual_gain_readback_is_not_requested_float(monkeypatch, tmp_path):
+    monkeypatch.setattr("oneseg.telemetry.default_log_directory", lambda: tmp_path)
     from oneseg.continuous import CaptureCancelled
 
     class GainAwareFake:
@@ -197,7 +198,7 @@ def test_fc0013_actual_gain_readback_is_not_requested_float(monkeypatch):
     device = GainAwareFake()
     status = []
 
-    def cancel_after_gain(dev, path, *, samples_required, warmup_buffers, cancelled):
+    def cancel_after_gain(dev, path, *, samples_required, warmup_buffers, cancelled, carry):
         assert dev.gain == -5.4
         raise CaptureCancelled("only testing actual gain readback")
 
@@ -215,3 +216,65 @@ def test_fc0013_actual_gain_readback_is_not_requested_float(monkeypatch):
     assert -7.3 in receiver.available_low_gains_db
     assert any("requested gain -5, commanded -5.4 dB" in x for x in status)
     assert device.closed
+
+
+def test_live_discovers_pat_and_pmt_across_independent_windows(tmp_path, monkeypatch):
+    from threading import Event
+    from oneseg.continuous import CaptureCancelled
+    from oneseg.ts import mpeg_crc32
+
+    def psi_packet(pid, section):
+        section += mpeg_crc32(section).to_bytes(4, "big")
+        payload = b"\0" + section
+        return bytes((0x47, 0x40 | (pid >> 8), pid & 255, 0x10)) + payload.ljust(184, b"\xff")
+
+    pat = psi_packet(0, bytes.fromhex("00b00d0001c100000001e100"))
+    pmt = psi_packet(256, bytes.fromhex("02b0120001c10000e101f0001be101f000"))
+    ready = Event()
+    calls = 0
+    chunks = iter((pat, pmt))
+    results = []
+
+    class Device:
+        gain = 0
+        freq_correction = 0
+        def close(self):
+            pass
+
+    def capture(device, target, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            assert ready.wait(5)
+            raise CaptureCancelled("two windows captured")
+        target.write_bytes(bytes((128, 128)) * 1024000)
+
+    def decode(source, target, **kwargs):
+        data = next(chunks)
+        target.write_bytes(data)
+        if data == pmt:
+            ready.set()
+        return {
+            "rs_and_ts_accepted_packets": 1,
+            "rejected_rs_or_invalid_ts_packets": 0,
+            "pat_programs": {1: 256} if data == pat else {},
+            "pmt_elementary_streams": {},
+            "input_overload_warning": False,
+        }
+
+    monkeypatch.setattr("oneseg.telemetry.default_log_directory", lambda: tmp_path)
+    monkeypatch.setattr("oneseg.live.record_raw_window", capture)
+    worker = ExperimentalLiveReceiver(frequency_hz=515142857, ppm=0, gain=-6.5,
+                                      chunk_seconds=.5, device_factory=Device,
+                                      decode_function=decode)
+    # Signals emitted by the plain decoder thread need a Qt event loop;
+    # inspect the persisted metrics instead of relying on queued delivery.
+    worker.run()
+    import json
+    results = [json.loads(line)["metrics"] for line in worker.log_path.read_text().splitlines()
+               if json.loads(line)["event"] == "window_result"]
+    assert len(results) == 2
+    assert results[0]["has_pat"] and not results[0]["has_pmt"]
+    assert results[1]["has_pat"] and results[1]["has_pmt"]
+    assert not results[1]["window_has_pat"]
+    assert results[1]["accepted_total"] == 2

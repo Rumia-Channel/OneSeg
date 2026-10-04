@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
@@ -29,11 +30,11 @@ class UnverifiedTmccError(ValueError):
             "iq_fullscale_percent": report.get("iq_fullscale_percent"),
             "single_sync_candidates": report.get("single_sync_candidates"),
             "repeated_sync_candidates": len(
-                report.get("repeated_sync_candidates", [])
+                report.get("repeated_sync_candidates") or []
             ),
             "gain_db": report.get("gain_db"),
             "tmcc_parity_verified_frames": len(
-                report.get("bch_parity_verified_frames", [])
+                report.get("bch_parity_verified_frames") or []
             ),
             "tmcc_soft_source": report.get("tmcc_soft_source"),
             "tmcc_per_carrier_verified_counts": report.get(
@@ -44,12 +45,23 @@ class UnverifiedTmccError(ValueError):
             "fft_symbols": report.get("fft_symbols"),
         }
         diag = self.diagnostics
+
+        def measurement(name: str, digits: int) -> str:
+            value = diag[name]
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+            ):
+                return f"{value:.{digits}f}"
+            return "unavailable"
+
         super().__init__(
             "no parity-verified TMCC frames; "
-            f"CP {diag['cp_quality']:.3f}, "
-            f"pilots {diag['pilot_coherence']:.3f}, "
-            f"I/Q RMS {diag['iq_rms']:.4f}, "
-            f"full-scale {diag['iq_fullscale_percent']:.2f}%, "
+            f"CP {measurement('cp_quality', 3)}, "
+            f"pilots {measurement('pilot_coherence', 3)}, "
+            f"I/Q RMS {measurement('iq_rms', 4)}, "
+            f"full-scale {measurement('iq_fullscale_percent', 2)}%, "
             f"sync candidates {diag['single_sync_candidates']} "
             f"(repeated {diag['repeated_sync_candidates']}); "
             "no MPEG-TS produced"
@@ -95,7 +107,7 @@ def decode_capture(
         raise FileExistsError(f"output or sidecar already exists: {output}")
     if not 0.5 <= seconds <= 3.0:
         raise ValueError("seconds must be between 0.5 and 3.0")
-    if max_ofdm_symbols < 204:
+    if type(max_ofdm_symbols) is not int or max_ofdm_symbols < 204:
         raise ValueError("max_ofdm_symbols must be >= 204")
     start = perf_counter()
     if progress:
@@ -110,7 +122,7 @@ def decode_capture(
             compress_fixture=False,
         )
         after_pilots = perf_counter()
-        frames = report["bch_parity_verified_frames"]
+        frames = report.get("bch_parity_verified_frames")
         if not frames:
             raise UnverifiedTmccError(report)
         tmcc_path.write_text(

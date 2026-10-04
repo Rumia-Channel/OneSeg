@@ -18,9 +18,15 @@ jobs:
         with:
           python-version: "3.12"
       - name: Resolve project and test dependencies
-        run: uv sync
-      - name: Unit tests (no USB hardware required)
-        run: uv run pytest -q
+        run: uv sync --locked
+      - name: Correctness lint
+        run: uv run --locked ruff check .
+      - name: Unit and offscreen GUI tests (no USB hardware required)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run --locked pytest -q
+      - name: CLI help smoke test
+        run: uv run --locked oneseg --help
       - name: GUI import smoke test (Windows)
         if: runner.os == 'Windows'
         run: uv run python -c "import oneseg.gui; print('GUI imports OK')"

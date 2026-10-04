@@ -128,7 +128,7 @@ class SessionTelemetry:
 
     def emit(self, event: str, *, window: int | None = None, **measurements) -> bool:
         with self._lock:
-            if self._closed:
+            if self._closed or self.error is not None:
                 return False
             record = {
                 "schema": SCHEMA_VERSION,
@@ -147,18 +147,23 @@ class SessionTelemetry:
             return True
 
     def _run(self):
-        try:
-            while True:
-                entry = self._queue.get()
-                if entry is None:
-                    break
+        # Keep consuming after a serialization/disk failure. close() must
+        # always be able to enqueue its sentinel, even with a full queue.
+        # Preserve the first error and refuse new events once it is known.
+        while True:
+            entry = self._queue.get()
+            if entry is None:
+                return
+            if self.error is not None:
+                continue
+            try:
                 self._file.write(
                     json.dumps(entry, ensure_ascii=False, allow_nan=False, default=str)
                     + "\n"
                 )
                 self._file.flush()
-        except Exception as exc:
-            self.error = f"{type(exc).__name__}: {exc}"
+            except Exception as exc:
+                self.error = f"{type(exc).__name__}: {exc}"
 
     def close(self):
         with self._lock:
@@ -215,6 +220,8 @@ def summarize_log(path: Path) -> dict:
                     counts["truncated_last_line"] += 1
                     break
                 raise ValueError(f"invalid JSONL line {number}") from exc
+            if not isinstance(record, dict):
+                raise ValueError(f"expected a JSON object at line {number}")
             if record.get("schema") != SCHEMA_VERSION:
                 raise ValueError(f"unsupported log schema at line {number}")
             counts[record["event"]] += 1

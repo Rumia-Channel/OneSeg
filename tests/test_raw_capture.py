@@ -99,3 +99,90 @@ def test_raw_fullscale_fraction_uses_either_i_or_q(tmp_path):
     odd.write_bytes(bytes((0, 1, 2)))
     with pytest.raises(ValueError, match="component count"):
         raw_fullscale_percent(odd)
+
+
+def test_successive_windows_preserve_every_usb_sample(tmp_path):
+    class CountingDevice:
+        calls = 0
+
+        def read_bytes(self, size):
+            self.calls += 1
+            return bytes((self.calls, 128)) * READ_SAMPLES
+
+    device = CountingDevice()
+    carry = bytearray()
+    count = READ_SAMPLES + 3
+    paths = [tmp_path / f"window_{i}.u8iq" for i in range(3)]
+    for path in paths:
+        record_raw_window(device, path, samples_required=count, carry=carry)
+    combined = b"".join(path.read_bytes() for path in paths) + bytes(carry)
+    assert device.calls == 4
+    assert combined == b"".join(
+        bytes((i, 128)) * READ_SAMPLES for i in range(1, 5)
+    )
+    assert all(path.stat().st_size == count * 2 for path in paths)
+
+
+def test_continuing_capture_rejects_warmup_or_odd_carry(tmp_path):
+    with pytest.raises(ValueError, match="warm up"):
+        record_raw_window(Device(), tmp_path / "a.u8iq", samples_required=3,
+                          carry=bytearray(b"12"), warmup_buffers=1)
+    with pytest.raises(ValueError, match="incomplete"):
+        record_raw_window(Device(), tmp_path / "a.u8iq", samples_required=3,
+                          carry=bytearray(b"1"))
+
+
+def test_cancelled_carry_only_window_is_not_published(tmp_path):
+    carry = bytearray(b"1234")
+    target = tmp_path / "cancel.u8iq"
+    with pytest.raises(CaptureCancelled):
+        record_raw_window(Device(), target, samples_required=1,
+                          carry=carry, cancelled=lambda: True)
+    assert carry == b"1234"
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("kind", ["raw", "expanded", "complex"])
+def test_capture_publication_race_preserves_concurrent_output(tmp_path, monkeypatch, kind):
+    import os
+    from oneseg.continuous import record_stream
+    target = tmp_path / ("race.u8iq" if kind == "raw" else "race.c64")
+    operation = "rename" if os.name == "nt" else "link"
+    link = getattr(os, operation)
+
+    def concurrent_writer(source, destination):
+        target.write_bytes(b"another capture")
+        link(source, destination)
+
+    monkeypatch.setattr(os, operation, concurrent_writer)
+    with pytest.raises(FileExistsError):
+        if kind == "raw":
+            record_raw_window(Device(), target, samples_required=1)
+        elif kind == "complex":
+            record_stream(Device(), target, samples_required=1, metadata={})
+        else:
+            raw = tmp_path / "input.u8iq"
+            raw.write_bytes(b"12")
+            expand_raw_to_c64(raw, target, metadata={})
+    assert target.read_bytes() == b"another capture"
+    assert not target.with_suffix(target.suffix + ".json").exists()
+    assert not target.with_name(target.name + ".partial").exists()
+
+
+def test_partial_created_concurrently_is_not_deleted(tmp_path, monkeypatch):
+    from pathlib import Path
+    from oneseg.continuous import record_stream
+    target = tmp_path / "race.c64"
+    partial = target.with_name(target.name + ".partial")
+    original_open = Path.open
+
+    def race_open(path, mode="r", *args, **kwargs):
+        if path == partial and mode == "xb":
+            with original_open(path, "wb") as file:
+                file.write(b"other process")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", race_open)
+    with pytest.raises(FileExistsError):
+        record_stream(Device(), target, samples_required=1, metadata={})
+    assert partial.read_bytes() == b"other process"

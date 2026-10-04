@@ -4,6 +4,31 @@ Windows 11 / Python 3.12 / **uv only**. No Conda, GNU Radio, WSL or administrato
 
 > **Status (experimental):** Windows SDR reception, mono FM, I/Q capture, verified 20ch TMCC, and offline RS-validated partial one-seg MPEG-TS recovery are implemented. **The GUI now has an experimental RF → TS → PyAV live path**, but it decodes 3-second windows independently, can lose samples/transport packets, and has not been verified playing continuous TV on the actual DS-DT308SV. It is NOT yet a confirmed, gapless real-time television receiver.
 
+## Current implementation and verification
+
+The software is still an **experimental receiver**, with a supported offline
+Mode-3 / guard-1/8 / Layer-A QPSK 2/3 path. A successfully corrected TS packet
+is not proof of continuous television. The detailed dated notes below preserve
+historical trials; use this section for the current software behavior.
+
+- Live acquisition retains the unused tail of each synchronous USB read across
+  adjacent windows. This removes software-created sample gaps at window edges;
+  USB sample continuity and the independently restarted DSP remain unverified.
+- Transport discovery assembles CRC-checked PAT/PMT across TS packets, follows
+  table versions and removed services, and rejects broken continuity. Live mode
+  retains completed tables across windows and buffers real pre-PSI TS within a
+  fixed memory bound. It never fabricates missing tables or packets.
+- Stop/Close waits asynchronously for worker shutdown; diagnostic writer errors
+  are reported without deadlocking shutdown. Playback cancellation is normal.
+- Captures and TS conversion refuse to overwrite existing files, including
+  concurrently created outputs. Strict TS conversion does not publish a partial
+  result after a decoding failure.
+- Captures record requested/commanded manual gain separately from unreliable
+  hardware getter readback. A command is not an independent analog calibration.
+
+See [verification and hardware acceptance](docs/VALIDATION.md) for reproducible
+software checks and the remaining real-device acceptance criteria.
+
 ## Installation (PowerShell)
 
 1. Install [uv](https://docs.astral.sh/uv/) and `uv python install 3.12`.
@@ -20,17 +45,19 @@ There is no USB device available in CI: reception and Windows sound-device behav
 ## Features
 
 - **SDR mode:** spectrum, manual frequency tuning, optional wide-FM mono audio (a sound output device is required).
-- **1seg research mode:** physical channels 13–52, RF frequency calculation, spectrum, and I/Q recording. It does **not** decode television yet.
+- **1seg research mode:** physical channels 13–52, RF frequency calculation, spectrum, and I/Q recording. Offline partial TS decoding and an experimental live path are available; continuous television remains unverified.
 - **Record:** choose a `.c64` file (little-endian complex64 I/Q). A `.json` sidecar records center frequency, sample rate, gain and PPM. Retuning stops the current recording to avoid mixing frequencies.
 - **Offline diagnostics:** `uv run oneseg-inspect path/to/capture.c64` prints *candidate* cyclic-prefix correlation peaks; `uv run oneseg-ofdm path/to/capture.c64 --output ofdm_symbols.npz` writes central-segment FFT constellations (NOT TS). Shorter guard windows overlap longer ones and false locks are possible.
 - **TS backend:** `uv run oneseg-ts rs204 input.rs204 output.ts` converts synthetic or externally recovered *aligned* shortened outer RS(204,188) codewords into checked TS packets. `uv run oneseg-ts postfec input.bin output.ts` accepts **externally recovered, frame-aligned Viterbi output bytes** (not raw I/Q), runs 12-way byte deinterleaving, energy descrambling, RS correction and TS validation. Use `--no-byte-deinterleave` only if the input is already byte-deinterleaved. `uv run oneseg-ts inspect output.ts` prints packet and PAT/PMT statistics. Wrong frame alignment or PRBS state produces no TS.
-- **TS viewer:** click “Play decoded TS…” to open an existing .ts with PyAV/FFmpeg for video and audio. This does not receive live television yet.
+- **TS viewer:** click “Play decoded TS…” to open an existing .ts with PyAV/FFmpeg for video and audio. This file viewer is separate from the experimental live receiver.
 
 ## Development
 
 ```powershell
-uv run pytest
-uv run oneseg --help
+uv sync --locked
+uv run --locked ruff check .
+uv run --locked pytest
+uv run --locked oneseg --help
 ```
 
 Project root: `src/oneseg/`. The GUI owns the worker thread; the RTL device is opened and closed on that thread and commands are consumed between read buffers.

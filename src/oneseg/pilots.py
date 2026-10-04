@@ -1,12 +1,13 @@
 """Pilot-based integer-carrier alignment and experimental TMCC sync diagnostics.
 
 MODE 3 / 1/8 only until additional modes are validated with real recordings.
-No BCH-verified TMCC, transport stream, or live television is produced.
+Protected TMCC parity is checked; transport stream and live television
+are produced only by later, separately validated stages.
 
 A 2.048MS/s capture is centrally filtered and resampled by 125/252.
 The nominal 433 active carriers of segment 0 are searched over integer FFT
 bin offsets, using the expected DBPSK/scattered pilot pattern. Equalization
-then supports an *unverified* search for repeated TMCC sync words.
+then supports TMCC sync searches and protected-field parity verification.
 """
 from __future__ import annotations
 

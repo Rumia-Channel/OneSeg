@@ -13,11 +13,12 @@ Buffering on a normal file does not establish hardware sample continuity.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
+
+from .file_output import publish_new_file
 
 from .continuous import CaptureCancelled, READ_SAMPLES, convert_u8_to_c64
 from .dsp import DEFAULT_SAMPLE_RATE
@@ -30,12 +31,16 @@ def record_raw_window(
     samples_required: int,
     cancelled: Callable[[], bool] = lambda: False,
     warmup_buffers: int = 0,
+    carry: bytearray | None = None,
 ) -> int:
     """Publish an exact-sized interleaved 8-bit IQ window atomically.
 
     Keep the native USB API on the calling thread; only copy bytes and
     write to a 1MiB-buffered stream. 3sec at 2.048MS/s = 12,288,000
     bytes on disk (versus 49,152,000 bytes for complex64).
+    Reuse ``carry`` for successive windows to retain the unused tail of
+    a full USB read. This prevents software-created gaps, but cannot
+    establish whether the hardware itself dropped samples.
     """
     target = Path(target)
     if target.suffix.lower() != ".u8iq":
@@ -46,9 +51,15 @@ def record_raw_window(
     if target.exists() or partial.exists():
         raise FileExistsError(f"raw capture already exists: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
+    if carry is not None and len(carry) % 2:
+        raise ValueError("incomplete I/Q pair in carry buffer")
+    if warmup_buffers and carry:
+        raise ValueError("cannot warm up a continuing raw stream")
     recorded = 0
+    owns_partial = False
     try:
         with partial.open("xb", buffering=1024 * 1024) as out:
+            owns_partial = True
             for _ in range(warmup_buffers):
                 if cancelled():
                     raise CaptureCancelled("raw I/Q capture cancelled")
@@ -57,6 +68,13 @@ def record_raw_window(
                     raise IOError(
                         f"short warmup USB buffer: {len(warmup)}"
                     )
+            if cancelled():
+                raise CaptureCancelled("raw I/Q capture cancelled")
+            if carry:
+                take = min(samples_required * 2, len(carry))
+                out.write(carry[:take])
+                del carry[:take]
+                recorded += take // 2
             while recorded < samples_required:
                 if cancelled():
                     raise CaptureCancelled("raw I/Q capture cancelled")
@@ -68,10 +86,14 @@ def record_raw_window(
                 take = min(READ_SAMPLES, samples_required - recorded)
                 out.write(raw[:take * 2])
                 recorded += take
-        os.replace(partial, target)
+                if carry is not None and take < READ_SAMPLES:
+                    carry.extend(raw[take * 2:])
+        publish_new_file(partial, target)
+        partial.unlink(missing_ok=True)
         return recorded
     except Exception:
-        partial.unlink(missing_ok=True)
+        if owns_partial:
+            partial.unlink(missing_ok=True)
         raise
 
 
@@ -108,9 +130,11 @@ def expand_raw_to_c64(
         "sample_continuity_verified": False,
         "decoding_status": "RAW_IQ_NOT_TS",
     }
+    owns_partial = owns_sidecar = published = False
     try:
         with raw_window.open("rb", buffering=1024 * 1024) as source:
             with partial.open("xb", buffering=1024 * 1024) as output:
+                owns_partial = True
                 while raw := source.read(2 * READ_SAMPLES):
                     if len(raw) % 2:
                         raise ValueError("truncated u8 I/Q pair")
@@ -118,15 +142,17 @@ def expand_raw_to_c64(
                     output.write(converted.tobytes())
         if partial.stat().st_size != byte_count * 4:
             raise IOError("raw IQ expansion has incorrect output byte count")
-        sidecar.write_text(
-            json.dumps(details, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        os.replace(partial, target)
+        with sidecar.open("x", encoding="utf-8") as report:
+            owns_sidecar = True
+            report.write(json.dumps(details, ensure_ascii=False, indent=2))
+        publish_new_file(partial, target)
+        published = True
+        partial.unlink(missing_ok=True)
         return details
     except Exception:
-        partial.unlink(missing_ok=True)
-        if not target.exists():
+        if owns_partial:
+            partial.unlink(missing_ok=True)
+        if owns_sidecar and not published:
             sidecar.unlink(missing_ok=True)
         raise
 

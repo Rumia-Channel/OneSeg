@@ -5,7 +5,7 @@ import argparse
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="OneSeg SDR / 1seg research GUI (1seg video decoding not implemented)"
+        description="OneSeg SDR / experimental 1seg GUI (continuous live TV unverified)"
     )
     parser.parse_args()
     from .gui import main as gui_main

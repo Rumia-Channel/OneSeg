@@ -14,6 +14,7 @@ from .channels import physical_channel_hz
 from .dsp import DEFAULT_SAMPLE_RATE
 from .ppm import PpmCorrection
 from .continuous import READ_SAMPLES, record_stream
+from .gain_control import set_discrete_manual_gain
 
 DEFAULT_SECONDS = 3.0
 
@@ -38,6 +39,11 @@ def capture_channel(
     output = Path(output)
     if output.suffix.lower() != ".c64":
         raise ValueError("capture filename must have .c64 extension")
+    if any(path.exists() for path in (
+        output, output.with_suffix(output.suffix + ".json"),
+        output.with_name(output.name + ".partial"),
+    )):
+        raise FileExistsError(f"capture, partial file or metadata already exists for {output}")
     if device_factory is None:
         from rtlsdr import RtlSdr
         device_factory = RtlSdr
@@ -49,7 +55,19 @@ def capture_channel(
         device.sample_rate = DEFAULT_SAMPLE_RATE
         PpmCorrection().apply(device, ppm)
         device.center_freq = freq_hz
-        device.gain = gain
+        if gain == "auto":
+            device.gain = "auto"
+            gain_metadata = {"gain_db": "auto"}
+        else:
+            selected = set_discrete_manual_gain(device, float(gain))
+            gain_metadata = {
+                "gain_db": selected["commanded_gain_db"],
+                "gain_requested_db": selected["requested_gain_db"],
+                "gain_readback_db": selected["gain_readback_db"],
+                "gain_readback_matches_command": selected["gain_readback_matches_command"],
+                "gain_value_source": selected["gain_value_source"],
+                "actual_analog_gain_independently_verified": False,
+            }
         return record_stream(
             device,
             output,
@@ -59,7 +77,7 @@ def capture_channel(
                 "center_frequency_hz": freq_hz,
                 "physical_channel": channel,
                 "ppm": ppm,
-                "gain_db": gain,
+                **gain_metadata,
                 "capture_seconds": expected / DEFAULT_SAMPLE_RATE,
                 "utc_completed": datetime.now(timezone.utc).isoformat(),
             },

@@ -41,7 +41,14 @@ build-backend = "hatchling.build"
 packages = ["src/oneseg"]
 
 [dependency-groups]
-dev = ["pytest>=8,<10"]
+dev = ["pytest>=8,<10", "ruff>=0.14,<1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# Correctness checks; avoid unrelated formatting churn in the research code.
+select = ["E9", "F63", "F7", "F82"]
