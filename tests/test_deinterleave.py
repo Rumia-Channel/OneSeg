@@ -120,3 +120,55 @@ def test_metadata_mismatch_is_rejected(tmp_path):
     }))
     with pytest.raises(ValueError, match="frame offsets"):
         process_fixture(path, report, tmp_path/"out.npz")
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])
+def test_bit_deinterleave_rejects_nonfinite_values_before_clipping(bad):
+    symbols = np.ones((2, 384), dtype=np.complex64)
+    symbols[0, 0] = bad
+    with pytest.raises(ValueError, match="non-finite"):
+        qpsk_bit_deinterleave(symbols)
+
+
+@pytest.mark.parametrize("collision", ["partial", "sidecar", "output"])
+def test_deinterleave_preserves_racing_output_files(tmp_path, monkeypatch, collision):
+    from pathlib import Path
+    import oneseg.deinterleave as module
+
+    source = tmp_path / "source.npz"
+    np.savez(source, equalized_payload_carriers=np.ones((600, 384), np.complex64),
+             verified_tmcc_frame_start_fft_rows=np.array([101]))
+    report = tmp_path / "source.json"
+    report.write_text(json.dumps({
+        "mode_assumed": 3, "fft_symbols": 600, "tmcc_bch_verified": True,
+        "bch_parity_verified_frames": [{
+            "frame_start_bit_index": 100, "syndrome": 0, "partial_reception_flag": True,
+            "layer_A": {"modulation": "QPSK", "code_rate": "2/3",
+                        "segments": 1, "time_interleaving_mode3": 4},
+        }],
+    }))
+    output = tmp_path / "out.npz"
+    partial = tmp_path / "out.npz.partial"
+    sidecar = tmp_path / "out.npz.json"
+    target = {"partial": partial, "sidecar": sidecar, "output": output}[collision]
+    original_open = Path.open
+    original_publish = module.publish_new_file
+
+    def race_open(path, mode="r", *args, **kwargs):
+        if path == target and mode in ("xb", "x"):
+            with original_open(path, "wb") as handle:
+                handle.write(b"concurrent owner")
+        return original_open(path, mode, *args, **kwargs)
+
+    def race_publish(source_path, target_path):
+        with original_open(target_path, "wb") as handle:
+            handle.write(b"concurrent owner")
+        return original_publish(source_path, target_path)
+
+    monkeypatch.setattr(Path, "open", race_open)
+    if collision == "output":
+        monkeypatch.setattr(module, "publish_new_file", race_publish)
+    with pytest.raises(FileExistsError):
+        process_fixture(source, report, output)
+    assert target.read_bytes() == b"concurrent owner"
+    assert all(not path.exists() for path in (output, partial, sidecar) if path != target)

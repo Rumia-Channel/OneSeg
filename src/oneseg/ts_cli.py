@@ -8,17 +8,40 @@ components independently with synthetic and future demodulator test vectors.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+from tempfile import NamedTemporaryFile
 from pathlib import Path
 
+from .file_output import publish_new_file
 from .fec import OuterReedSolomon
 from .post_fec import PostViterbiTransport
 from .ts import TransportFramer, TransportStats, TransportWriter, parse_packet
 
 
+@contextmanager
+def _new_transport_output(target: Path):
+    """Publish validated conversion only on success; never clobber inputs."""
+    target = Path(target)
+    if target.exists():
+        raise FileExistsError(f"output already exists: {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile(prefix=f".{target.name}.", suffix=".partial",
+                            dir=target.parent, delete=False) as reserved:
+        temporary = Path(reserved.name)
+    try:
+        with TransportWriter(temporary) as writer:
+            yield writer
+        # No-clobber publication also refuses a concurrently created output.
+        # os.replace would overwrite it.
+        publish_new_file(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def decode_outer_file(source: Path, target: Path, *, strict: bool = True) -> tuple[int, int]:
     decoder = OuterReedSolomon()
     accepted = rejected = 0
-    with source.open("rb") as inp, TransportWriter(target) as out:
+    with source.open("rb") as inp, _new_transport_output(target) as out:
         while data := inp.read(204):
             if len(data) != 204:
                 if strict:
@@ -43,14 +66,14 @@ def decode_post_fec_file(
 ) -> tuple[int, int]:
     """Consume externally recovered, aligned Viterbi bytes (NOT RTL-SDR I/Q)."""
     decoder = PostViterbiTransport(byte_deinterleaving=byte_deinterleaving)
-    with source.open("rb") as inp, TransportWriter(target) as out:
+    with source.open("rb") as inp, _new_transport_output(target) as out:
         first = True
         while chunk := inp.read(204 * 64):
             for packet in decoder.feed(chunk, frame_begin=first):
                 out.write(packet)
             first = False
-    if decoder.pending:
-        raise ValueError("trailing partial 204-byte block")
+        if decoder.pending:
+            raise ValueError("trailing partial 204-byte block")
     rejected = decoder.stats.rejected_rs_words + decoder.stats.rejected_ts_packets
     return decoder.stats.good_ts_packets, rejected
 

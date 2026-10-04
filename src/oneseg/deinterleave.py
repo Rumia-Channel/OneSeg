@@ -14,11 +14,14 @@ No Viterbi, byte deinterleaver, RS codewords, MPEG-TS or video.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-import os
 from pathlib import Path
 
 import numpy as np
+
+from .tmcc import parse_tmcc_frame
+from .file_output import publish_new_file
 
 PAYLOAD_CARRIERS = 384
 QPSK_BIT_DELAY_CARRIERS = 120
@@ -97,6 +100,8 @@ def qpsk_bit_deinterleave(
     data = np.asarray(symbols)
     if data.ndim != 2 or data.shape[1] != PAYLOAD_CARRIERS:
         raise ValueError("expected (OFDM symbols, 384 QPSK carriers)")
+    if not np.isfinite(data).all():
+        raise ValueError("non-finite QPSK values")
     flat = data.reshape(-1)
     if len(flat) <= QPSK_BIT_DELAY_CARRIERS:
         raise ValueError("need more than 120 carrier symbols")
@@ -127,48 +132,95 @@ def process_fixture(
     metadata_file = output.with_suffix(output.suffix + ".json")
     if output.exists() or metadata_file.exists():
         raise FileExistsError("output or matching JSON report already exists")
-    report = json.loads(tmcc_report.read_text(encoding="utf-8"))
+    report_bytes = tmcc_report.read_bytes()
+    report = json.loads(report_bytes)
+    if not isinstance(report, dict):
+        raise ValueError("TMCC report must be a JSON object")
     passed = report.get("bch_parity_verified_frames", [])
-    if not passed:
+    if not isinstance(passed, list) or not passed:
         raise ValueError("no parity-verified TMCC frames")
+    if any(
+        not isinstance(frame, dict)
+        or not isinstance(frame.get("layer_A"), dict)
+        for frame in passed
+    ):
+        raise ValueError("invalid TMCC frame or Layer-A metadata")
+    # Modern reports retain all 184 protected bits. Recheck them instead of
+    # relying on the JSON's boolean/syndrome claims. Legacy reports remain
+    # readable, but the absence of independently rechecked parity is recorded.
+    reverified = 0
+    for frame in passed:
+        if frame.get("bch_parity_verified") is False:
+            raise ValueError("TMCC frame is not parity verified")
+        if "info_bits_hex" in frame or "parity_bits_hex" in frame:
+            try:
+                info = int(frame["info_bits_hex"], 16)
+                parity = int(frame["parity_bits_hex"], 16)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("invalid TMCC protected-bit encoding") from exc
+            if not 0 <= info < 1 << 102 or not 0 <= parity < 1 << 82:
+                raise ValueError("TMCC protected bits exceed their field widths")
+            bits = np.array(
+                [int(bit) for bit in f"{info:0102b}{parity:082b}"],
+                dtype=np.uint8,
+            )
+            checked = parse_tmcc_frame(np.r_[np.zeros(20, dtype=np.uint8), bits])
+            for key in ("modulation", "code_rate", "segments", "time_interleaving_mode3"):
+                if frame["layer_A"].get(key) != checked["layer_A"][key]:
+                    raise ValueError("TMCC Layer-A fields disagree with protected bits")
+            if frame.get("partial_reception_flag") != checked["partial_reception_flag"]:
+                raise ValueError("TMCC partial-reception flag disagrees with protected bits")
+            reverified += 1
     layers = [frame["layer_A"] for frame in passed]
     if any(
         layer != layers[0] for layer in layers
     ) or any(
-        frame.get("syndrome") != 0 for frame in passed
+        type(frame.get("syndrome")) is not int or frame["syndrome"] != 0
+        for frame in passed
     ):
         raise ValueError("TMCC verified parameters disagree")
     layer = layers[0]
     if (
-        not report.get("tmcc_bch_verified")
+        report.get("tmcc_bch_verified") is not True
         or not all(
             frame.get("partial_reception_flag") is True for frame in passed
         )
         or layer.get("modulation") != "QPSK"
         or layer.get("code_rate") != "2/3"
-        or layer.get("segments") != 1
-        or layer.get("time_interleaving_mode3") not in (0, 1, 2, 4)
+        or type(layer.get("segments")) is not int or layer["segments"] != 1
+        or type(layer.get("time_interleaving_mode3")) is not int
+        or layer["time_interleaving_mode3"] not in (0, 1, 2, 4)
     ):
         raise ValueError("only TMCC-verified Mode-3 Layer-A QPSK 2/3 1seg is supported")
-    if report.get("mode_assumed") != 3:
+    if type(report.get("mode_assumed")) is not int or report["mode_assumed"] != 3:
         raise ValueError("requires Mode-3 synchronization report")
+    if any(
+        type(frame.get("frame_start_bit_index")) is not int
+        or frame["frame_start_bit_index"] < 0
+        for frame in passed
+    ):
+        raise ValueError("TMCC frame offsets must be nonnegative integers")
 
     with np.load(fixture, allow_pickle=False) as archive:
-        if "equalized_payload_carriers" not in archive:
-            raise ValueError("missing equalized carrier array")
+        if not {"equalized_payload_carriers", "verified_tmcc_frame_start_fft_rows"} <= set(archive.files):
+            raise ValueError("missing equalized carrier array or verified TMCC frame offsets")
         raw = archive["equalized_payload_carriers"]
         starts = archive["verified_tmcc_frame_start_fft_rows"]
         if raw.ndim != 2 or raw.shape[1] != PAYLOAD_CARRIERS:
             raise ValueError("expected 384 carriers per OFDM symbol")
-        if int(report["fft_symbols"]) != len(raw):
+        if type(report.get("fft_symbols")) is not int or report["fft_symbols"] != len(raw):
             raise ValueError("JSON and carrier fixture symbol counts disagree")
+        if not np.issubdtype(raw.dtype, np.number):
+            raise ValueError("carrier fixture must contain numeric constellation values")
         if not np.isfinite(raw).all():
             raise ValueError("fixture has nonfinite constellation values")
-        expected_starts = sorted({
-            int(x["frame_start_bit_index"]) + 1 for x in passed
-            if int(x["frame_start_bit_index"]) + 1 + 204 <= len(raw)
-        })
-        if starts.tolist() != expected_starts:
+        expected_starts = sorted({x["frame_start_bit_index"] + 1 for x in passed})
+        if (
+            starts.ndim != 1
+            or not np.issubdtype(starts.dtype, np.integer)
+            or starts.tolist() != expected_starts
+            or any(start + 204 > len(raw) for start in expected_starts)
+        ):
             raise ValueError("TMCC report and carrier fixture frame offsets disagree")
     after_freq = frequency_deinterleave(raw)
     i_param = int(layer["time_interleaving_mode3"])
@@ -180,9 +232,18 @@ def process_fixture(
     if temp.exists():
         raise FileExistsError("incomplete output already exists")
     output.parent.mkdir(parents=True, exist_ok=True)
+    with fixture.open("rb") as source:
+        source_sha256 = hashlib.file_digest(source, "sha256").hexdigest()
     details = {
         "source_npz": str(fixture),
         "source_tmcc_report": str(tmcc_report),
+        "source_npz_sha256": source_sha256,
+        "source_tmcc_report_sha256": hashlib.sha256(report_bytes).hexdigest(),
+        "tmcc_protected_fields_reverified": reverified == len(passed),
+        "tmcc_provenance": (
+            "protected-field parity rechecked" if reverified == len(passed)
+            else "legacy report assertions; protected bits unavailable for some frames"
+        ),
         "mode": 3, "partial_reception": True,
         "modulation": "QPSK", "code_rate": "2/3",
         "segments": 1, "time_interleaving_parameter": i_param,
@@ -197,8 +258,10 @@ def process_fixture(
         "bit_metrics_are_calibrated_llr": False,
         "viterbi_decoded": False, "mpeg_ts_recovered": False,
     }
+    owns_partial = owns_metadata = published = False
     try:
         with temp.open("xb") as destination:
+            owns_partial = True
             writer = np.savez_compressed if compress else np.savez
             writer(
                 destination,
@@ -207,14 +270,18 @@ def process_fixture(
                 qpsk_soft_metric_proxy=soft,
                 stage="frequency/time/QPSK-bit deinterleaved; NOT FEC / MPEG-TS",
             )
-        metadata_file.write_text(
-            json.dumps(details, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        os.replace(temp, output)
-    except Exception:
+        with temp.open("rb") as saved:
+            details["fixture_sha256"] = hashlib.file_digest(saved, "sha256").hexdigest()
+        with metadata_file.open("x", encoding="utf-8") as metadata_stream:
+            owns_metadata = True
+            json.dump(details, metadata_stream, ensure_ascii=False, indent=2)
+        publish_new_file(temp, output)
+        published = True
         temp.unlink(missing_ok=True)
-        if not output.exists():
+    except Exception:
+        if owns_partial:
+            temp.unlink(missing_ok=True)
+        if owns_metadata and not published:
             metadata_file.unlink(missing_ok=True)
         raise
     return details

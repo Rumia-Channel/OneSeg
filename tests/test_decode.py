@@ -109,3 +109,38 @@ def test_rejects_missing_sidecar_and_bad_extension(tmp_path):
         decode_capture(source, tmp_path / "result.txt")
     with pytest.raises(ValueError):
         decode_capture(source, tmp_path / "result.ts", seconds=10)
+
+
+@pytest.mark.parametrize("value", [None, "unknown", float("nan"), float("inf"), True])
+def test_incomplete_tmcc_diagnostics_do_not_mask_failure(value):
+    from oneseg.decode import DecodeStageError, UnverifiedTmccError
+
+    report = {"cp_quality": value, "bch_parity_verified_frames": None,
+              "repeated_sync_candidates": None}
+    error = UnverifiedTmccError(report)
+    assert "CP unavailable" in str(error)
+    assert error.diagnostics["cp_quality"] is value
+    stage_error = DecodeStageError("deinterleave", report, ValueError("bad input"))
+    assert str(stage_error) == "deinterleave failed: bad input"
+    assert stage_error.diagnostics["original_error"] == "bad input"
+
+
+def test_stage_failure_retains_original_cause_and_diagnostics(tmp_path, monkeypatch):
+    from oneseg.decode import DecodeStageError
+
+    source = tmp_path / "source.c64"
+    source.write_bytes(bytes(8))
+    source.with_suffix(".c64.json").write_text("{}")
+    monkeypatch.setattr("oneseg.decode.analyze_capture", lambda *args, **kwargs: {
+        "bch_parity_verified_frames": [{"layer_A": {}}], "cp_quality": 0.8,
+    })
+    def fail(*args, **kwargs):
+        raise ValueError("unmatched protected metadata")
+    monkeypatch.setattr("oneseg.decode.process_fixture", fail)
+    output = tmp_path / "never.ts"
+    with pytest.raises(DecodeStageError) as failure:
+        decode_capture(source, output)
+    assert failure.value.stage == "deinterleave"
+    assert failure.value.diagnostics["tmcc_parity_verified_frames"] == 1
+    assert str(failure.value.__cause__) == "unmatched protected metadata"
+    assert not output.exists()

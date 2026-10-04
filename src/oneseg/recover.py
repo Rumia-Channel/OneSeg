@@ -11,15 +11,17 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import hashlib
 import json
-import os
 from pathlib import Path
 
 import numpy as np
 
+from .deinterleave import PAYLOAD_CARRIERS, QPSK_BIT_DELAY_CARRIERS
 from .fec import OuterReedSolomon, prbs_bytes
+from .file_output import publish_new_file
 from .post_fec import ByteDeinterleaver
-from .ts import TransportStats, TransportWriter, parse_packet
+from .ts import TransportStats, parse_packet
 from .viterbi import decode_soft_bits
 
 PACKET_SIZE = 204
@@ -165,40 +167,80 @@ def recover_file(
         raise ValueError("output must end in .ts")
     if output.exists() or target_info.exists() or partial.exists():
         raise FileExistsError("will not overwrite existing TS/sidecar/partial")
-    if max_ofdm_symbols < 204:
+    if type(max_ofdm_symbols) is not int or max_ofdm_symbols < 204:
         raise ValueError("--max-ofdm-symbols must be >= 204")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if not isinstance(metadata, dict):
+        raise ValueError("deinterleaved fixture metadata must be a JSON object")
     if any((
+        type(metadata.get("mode")) is not int,
         metadata.get("mode") != 3,
         metadata.get("modulation") != "QPSK",
         metadata.get("code_rate") != "2/3",
+        type(metadata.get("segments")) is not int,
         metadata.get("segments") != 1,
+        metadata.get("partial_reception") is not True,
     )):
         raise ValueError("requires Mode-3 QPSK 2/3 one-segment fixture")
+    integer_fields = (
+        "output_data_symbol_rows", "source_fft_symbols",
+        "time_interleaving_parameter", "time_deinterleaver_warmup_symbols",
+        "qpsk_bit_delay_carriers", "output_bit_count",
+    )
+    if any(type(metadata.get(key)) is not int for key in integer_fields):
+        raise ValueError("fixture dimensions and interleaver parameters must be integers")
+    original_rows = metadata["output_data_symbol_rows"]
+    source_rows = metadata["source_fft_symbols"]
+    depth = metadata["time_interleaving_parameter"]
+    expected_bits = 2 * (PAYLOAD_CARRIERS * original_rows - QPSK_BIT_DELAY_CARRIERS)
+    if (
+        original_rows <= 0 or depth not in (0, 1, 2, 4)
+        or metadata["time_deinterleaver_warmup_symbols"] != 95 * depth
+        or source_rows != original_rows + 95 * depth
+        or metadata["qpsk_bit_delay_carriers"] != QPSK_BIT_DELAY_CARRIERS
+        or metadata["output_bit_count"] != expected_bits
+    ):
+        raise ValueError("fixture dimensions and interleaver metadata disagree")
     starts = metadata.get("verified_tmcc_frame_starts_original_fft_rows", [])
-    if not starts or not all(isinstance(v, int) and v >= 0 for v in starts):
+    if (
+        not isinstance(starts, list) or not starts
+        or not all(type(v) is int and 0 <= v and v + 204 <= source_rows for v in starts)
+        or starts != sorted(set(starts))
+    ):
         raise ValueError("requires validated TMCC frame starts")
     first_row = min(starts)
+    fixture_digest = metadata.get("fixture_sha256")
+    if fixture_digest is not None:
+        if not isinstance(fixture_digest, str) or len(fixture_digest) != 64:
+            raise ValueError("invalid fixture SHA-256 metadata")
+        with fixture.open("rb") as source:
+            actual_digest = hashlib.file_digest(source, "sha256").hexdigest()
+        if fixture_digest != actual_digest:
+            raise ValueError("fixture SHA-256 does not match its metadata sidecar")
     with np.load(fixture, allow_pickle=False) as archive:
+        if "qpsk_soft_metric_proxy" not in archive:
+            raise ValueError("missing QPSK soft metrics")
         metrics = archive["qpsk_soft_metric_proxy"]
-        original_rows = int(metadata["output_data_symbol_rows"])
-        expected_bits = 2 * (384 * original_rows - 120)
-        if len(metrics) != expected_bits or metrics.ndim != 1:
+        if metrics.ndim != 1 or metrics.size != expected_bits:
             raise ValueError("QPSK proxy and metadata dimensions disagree")
-        if not np.isfinite(metrics).all():
+        if not np.issubdtype(metrics.dtype, np.floating) or not np.isfinite(metrics).all():
             raise ValueError("bad QPSK soft metrics")
     available = original_rows - first_row
     if available < 204:
         raise ValueError("less than one frame remains after TMCC alignment")
     rows = min(max_ofdm_symbols, available)
-    coded_start = first_row * 384 * 2
-    coded_end = min((first_row + rows) * 384 * 2, len(metrics))
+    coded_start = first_row * PAYLOAD_CARRIERS * 2
+    coded_end = min((first_row + rows) * PAYLOAD_CARRIERS * 2, len(metrics))
     coded = metrics[coded_start:coded_end]
     # Map signed QPSK axes (positive bit 0) into the [0,1]
     # representation expected by the repository Viterbi decoder.
     uncalibrated_soft = 0.5 - 0.49 * np.tanh(coded)
     usable = (len(uncalibrated_soft) // 3) * 3
-    if usable < 204 * 384 * 2:
+    # The last data row loses 120 carrier pairs in the QPSK bit delay.
+    # Exactly 204 available rows still contain >63 complete RS words, ample
+    # for sync/PRBS acquisition; don't demand a nonexistent full tail row.
+    minimum_coded_bits = 2 * (204 * PAYLOAD_CARRIERS - QPSK_BIT_DELAY_CARRIERS)
+    if usable < minimum_coded_bits:
         raise ValueError("too few whole 2/3-punctured QPSK periods")
     decoded_bits = decode_soft_bits(
         uncalibrated_soft[:usable], "2/3"
@@ -219,9 +261,20 @@ def recover_file(
     details = {
         "source_npz": str(fixture),
         "source_metadata": str(metadata_path),
+        "source_fixture_sha256": fixture_digest,
+        "source_fixture_sha256_verified": fixture_digest is not None,
+        "source_fixture_provenance": (
+            "SHA-256 bound to sidecar" if fixture_digest is not None
+            else "legacy sidecar; no fixture integrity digest"
+        ),
+        "source_tmcc_protected_fields_reverified": (
+            metadata.get("tmcc_protected_fields_reverified") is True
+        ),
         "source_verified_tmcc_starts": starts,
         "source_first_fft_row": first_row,
         "processed_ofdm_symbols": rows,
+        "processed_coded_bits": usable,
+        "trailing_qpsk_coded_bits_unavailable": rows * PAYLOAD_CARRIERS * 2 - len(coded),
         "rate": "2/3",
         "qpsk_soft_metrics_are_calibrated_llr": False,
         "decoded_inner_fec_bytes": len(decoded_bytes),
@@ -240,27 +293,32 @@ def recover_file(
         "pmt_elementary_streams": stats.elementary_streams,
         "continuity_errors_due_to_missing_or_bad_packets": stats.continuity_errors,
         "incomplete_partial_capture": True,
-        "sample_continuity_verified": bool(
-            metadata.get("sample_continuity_verified", False)
-        ),
+        "sample_continuity_verified": metadata.get("sample_continuity_verified") is True,
         "no_missing_packets_synthesized": True,
         "real_mpeg_ts_packets_recovered": True,
         "live_tuner_integration": False,
         "playback_not_guaranteed": True,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
+    owns_partial = owns_metadata = published = False
     try:
-        with TransportWriter(partial) as writer:
+        # Every packet was RS-checked and accepted by TransportStats above.
+        # Reserve the partial exclusively; a generic writer opening 'wb'
+        # would overwrite a file created after our initial existence check.
+        with partial.open("xb") as writer:
+            owns_partial = True
             for _, packet in recovered:
                 writer.write(packet)
-        target_info.write_text(
-            json.dumps(details, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        os.replace(partial, output)
-    except Exception:
+        with target_info.open("x", encoding="utf-8") as metadata_stream:
+            owns_metadata = True
+            json.dump(details, metadata_stream, ensure_ascii=False, indent=2)
+        publish_new_file(partial, output)
+        published = True
         partial.unlink(missing_ok=True)
-        if not output.exists():
+    except Exception:
+        if owns_partial:
+            partial.unlink(missing_ok=True)
+        if owns_metadata and not published:
             target_info.unlink(missing_ok=True)
         raise
     return details

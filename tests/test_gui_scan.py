@@ -1,17 +1,23 @@
 """Windows offscreen GUI test: scan workflow without a connected RTL2832U."""
 import os
-import sys
 from threading import Event
 
 import pytest
 
-if sys.platform != "win32":
-    pytest.skip("QtGui test needs the Windows Qt runtime in CI", allow_module_level=True)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 from oneseg.gui import MainWindow
+
+@pytest.fixture(autouse=True)
+def isolated_gui_settings(tmp_path, monkeypatch):
+    from PySide6.QtCore import QSettings
+    monkeypatch.setattr(
+        "oneseg.gui.QSettings",
+        lambda *args: QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat),
+    )
+
 
 
 class StubWorker:

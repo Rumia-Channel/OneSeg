@@ -28,6 +28,7 @@ from .ppm import PpmCorrection
 from .gain_control import set_discrete_manual_gain
 from .telemetry import SessionTelemetry, check_window
 from .diagnostic_bundle import DiagnosticBundle
+from .ts import TransportStats, parse_packet
 
 
 class LiveTsBuffer(RawIOBase):
@@ -39,6 +40,8 @@ class LiveTsBuffer(RawIOBase):
     """
     def __init__(self, limit_bytes: int = 188 * 32768):
         super().__init__()
+        if limit_bytes < 188:
+            raise ValueError("live TS buffer must hold at least one packet")
         self._condition = Condition()
         self._parts: deque[bytes] = deque()
         self._front_offset = 0
@@ -122,8 +125,8 @@ class ExperimentalLiveReceiver(QThread):
         decode_function: Callable = decode_capture,
     ):
         super().__init__()
-        if not 0.5 <= chunk_seconds <= 10.0:
-            raise ValueError("chunk_seconds must be 0.5..10")
+        if not 0.5 <= chunk_seconds <= 3.0:
+            raise ValueError("chunk_seconds must be 0.5..3 (offline decoder limit)")
         if max_ofdm_symbols < 204:
             raise ValueError("max_ofdm_symbols must be >=204")
         if not -200 <= ppm <= 200 or not -10 <= gain <= 50:
@@ -153,6 +156,7 @@ class ExperimentalLiveReceiver(QThread):
     def run(self):
         device = None
         decoded = 0
+        transport_stats = TransportStats()
         missing = 0
         capture_queue: Queue[Path | None] = Queue(maxsize=2)
         decoder: Thread | None = None
@@ -221,13 +225,24 @@ class ExperimentalLiveReceiver(QThread):
                             data = target.read_bytes()
                             if len(data) != 188 * result["rs_and_ts_accepted_packets"]:
                                 raise IOError("recovered TS byte count mismatch")
+                            # Decodes are independent windows. Retain complete
+                            # verified tables, never assemble PSI across an
+                            # unverified RF/deinterleaver gap.
+                            packets = [data[i:i + 188] for i in range(0, len(data), 188)]
+                            for packet in packets:
+                                parse_packet(packet)
+                            transport_stats.reset_partial_sections()
+                            for packet in packets:
+                                transport_stats.accept(packet)
                             decoded += result["rs_and_ts_accepted_packets"]
                             metrics = {
                                 "accepted_total": decoded,
                                 "accepted_chunk": result["rs_and_ts_accepted_packets"],
                                 "rejected_chunk": result["rejected_rs_or_invalid_ts_packets"],
-                                "has_pat": bool(result["pat_programs"]),
-                                "has_pmt": bool(result["pmt_elementary_streams"]),
+                                "has_pat": bool(transport_stats.pat),
+                                "has_pmt": bool(transport_stats.elementary_streams),
+                                "window_has_pat": bool(result["pat_programs"]),
+                                "window_has_pmt": bool(result["pmt_elementary_streams"]),
                                 "overloaded": (
                                     bool(result["input_overload_warning"])
                                     or raw_clipping > 5.0
@@ -318,8 +333,10 @@ class ExperimentalLiveReceiver(QThread):
                             "accepted_total": decoded,
                             "accepted_chunk": 0,
                             "rejected_chunk": 0,
-                            "has_pat": None,
-                            "has_pmt": None,
+                            "has_pat": bool(transport_stats.pat),
+                            "has_pmt": bool(transport_stats.elementary_streams),
+                            "window_has_pat": None,
+                            "window_has_pmt": None,
                             "overloaded": (
                                 raw_clipping is not None and raw_clipping > 5.0
                             ),
@@ -394,7 +411,11 @@ class ExperimentalLiveReceiver(QThread):
                             iq, iq.with_suffix(".c64.json"),
                             target, target.with_suffix(".ts.json"),
                         ):
-                            name.unlink(missing_ok=True)
+                            try:
+                                name.unlink(missing_ok=True)
+                            except OSError as cleanup_error:
+                                self.failed.emit(f"Live temporary file cleanup failed: {cleanup_error}")
+                                self.stop_event.set()
 
             # JIT initialization can briefly hold the Python GIL. Do it
             # BEFORE opening USB, not during the first subsequent RF read
@@ -460,6 +481,7 @@ class ExperimentalLiveReceiver(QThread):
             )
 
             ordinal = 0
+            raw_carry = bytearray()
             while not self.stop_event.is_set():
                 capture = root / f"window_{ordinal:06d}.u8iq"
                 ordinal += 1
@@ -471,6 +493,7 @@ class ExperimentalLiveReceiver(QThread):
                             DEFAULT_SAMPLE_RATE * self.chunk_seconds
                         ),
                         warmup_buffers=1 if ordinal == 1 else 0,
+                        carry=raw_carry,
                         cancelled=self.stop_event.is_set,
                     )
                     capture_timings[capture] = round(

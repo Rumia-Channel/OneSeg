@@ -1,16 +1,22 @@
 """Offline GUI decode button must never open a tuner or block the Qt event loop."""
 import os
-import sys
 
 import pytest
 
-if sys.platform != "win32":
-    pytest.skip("GUI Qt Windows CI only", allow_module_level=True)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 from oneseg.gui import MainWindow, OfflineDecodeWorker
+
+@pytest.fixture(autouse=True)
+def isolated_gui_settings(tmp_path, monkeypatch):
+    from PySide6.QtCore import QSettings
+    monkeypatch.setattr(
+        "oneseg.gui.QSettings",
+        lambda *args: QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat),
+    )
+
 
 
 def test_offline_button_requires_adjacent_iq_metadata(tmp_path, monkeypatch):

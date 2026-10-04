@@ -78,3 +78,37 @@ def test_device_closed_and_no_partial_output_after_failed_read(tmp_path):
     assert fake.closed
     assert not target.exists()
     assert not target.with_suffix(".c64.partial").exists()
+
+
+def test_existing_sidecar_is_rejected_before_opening_tuner(tmp_path):
+    target = tmp_path / "existing.c64"
+    target.with_suffix(".c64.json").write_text("important metadata")
+
+    def must_not_open():
+        raise AssertionError("preflight failure must not touch USB")
+
+    with pytest.raises(FileExistsError):
+        capture_channel(target, channel=20, device_factory=must_not_open)
+    assert target.with_suffix(".c64.json").read_text() == "important metadata"
+
+
+def test_capture_records_commanded_gain_separately_from_bad_readback(tmp_path):
+    class ZeroReadback(FakeSdr):
+        valid_gains_db = [-9.9, -7.3, -5.4, 5.8]
+
+        @property
+        def gain(self):
+            return 0.0
+
+        @gain.setter
+        def gain(self, value):
+            self.requested_gain = value
+
+    fake = ZeroReadback()
+    metadata = capture_channel(tmp_path / "gain.c64", channel=20,
+                               seconds=.25, gain=-5, device_factory=lambda: fake)
+    assert fake.requested_gain == -5.4
+    assert metadata["gain_db"] == -5.4
+    assert metadata["gain_requested_db"] == -5
+    assert metadata["gain_readback_db"] == 0
+    assert not metadata["gain_readback_matches_command"]

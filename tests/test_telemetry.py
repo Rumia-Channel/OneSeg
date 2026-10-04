@@ -116,3 +116,56 @@ def test_old_survey_log_with_false_zero_getter_is_regrouped(tmp_path):
     assert summary["by_applied_gain"]["-7.3"]["accepted_ts"] == 142
     assert summary["by_applied_gain"]["-6.5"]["accepted_ts"] == 375
     assert "0" not in summary["by_applied_gain"]
+
+
+def test_writer_failure_drains_queue_and_close_never_deadlocks(tmp_path):
+    """A NaN metric formerly killed the writer and deadlocked full-queue Stop."""
+    from threading import Event
+
+    logger = SessionTelemetry(tmp_path, capacity=1)
+    entered = Event()
+    release = Event()
+    actual_file = logger._file
+
+    class BrokenFile:
+        def write(self, value):
+            entered.set()
+            assert release.wait(3)
+            raise OSError("disk full")
+
+        def close(self):
+            actual_file.close()
+
+    logger._file = BrokenFile()
+    assert logger.emit("first")
+    assert entered.wait(3)
+    assert logger.emit("queued")
+    assert not logger.emit("overflow")
+    closer = Thread(target=logger.close, daemon=True)
+    closer.start()
+    release.set()
+    closer.join(3)
+    assert not closer.is_alive(), "close blocked after telemetry writer failure"
+    assert not logger._writer.is_alive()
+    assert logger.error == "OSError: disk full"
+    assert not logger.emit("after_failure")
+    logger.close()
+
+
+def test_nonfinite_metrics_report_writer_error_and_stop_cleanly(tmp_path):
+    logger = SessionTelemetry(tmp_path, capacity=1)
+    logger.emit("bad_metric", cp_quality=float("nan"))
+    closer = Thread(target=logger.close, daemon=True)
+    closer.start()
+    closer.join(3)
+    assert not closer.is_alive()
+    assert logger.error is not None and "ValueError" in logger.error
+    assert logger.path.read_text() == ""
+
+
+@pytest.mark.parametrize("record", ["[]", "null", "42", '"text"'])
+def test_non_object_json_log_is_rejected_clearly(tmp_path, record):
+    path = tmp_path / "bad.jsonl"
+    path.write_text(record + "\n")
+    with pytest.raises(ValueError, match="JSON object"):
+        summarize_log(path)

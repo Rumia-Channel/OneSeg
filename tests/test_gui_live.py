@@ -1,15 +1,21 @@
 """Windows offscreen GUI experimental live demodulation controls."""
 
 import os
-import sys
 import pytest
 
-if sys.platform != "win32":
-    pytest.skip("GUI Qt Windows CI only", allow_module_level=True)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 from oneseg.gui import MainWindow, ExperimentalLiveReceiver, TransportPlayer
+
+@pytest.fixture(autouse=True)
+def isolated_gui_settings(tmp_path, monkeypatch):
+    from PySide6.QtCore import QSettings
+    monkeypatch.setattr(
+        "oneseg.gui.QSettings",
+        lambda *args: QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat),
+    )
+
 
 
 def test_live_toggle_does_not_open_native_tuner_in_gui_thread(monkeypatch):
@@ -42,16 +48,16 @@ def test_live_toggle_does_not_open_native_tuner_in_gui_thread(monkeypatch):
         "rejected_chunk": 2, "windows_failed": 0,
         "has_pat": False, "has_pmt": False, "overloaded": False,
     }
-    sample = b"\x47" + b"\0" * 187
+    sample = b"\x47\x1f\xff\x10" + b"\xff" * 184
     window._live_progress(no_psi)
     window._live_transport(sample)
-    assert window.live_ts_skipped_waiting_psi == 1
+    assert window.live_ts_buffered_waiting_psi == 1
     assert started == [(515142857, 0, -3.0)]
     window._live_progress({**no_psi, "has_pat": True, "has_pmt": True})
     assert window.live_player_started
     assert started[-1] == "player"
     window._live_transport(sample)
-    assert window.live_stream.read(188) == sample
+    assert window.live_stream.read(376) == sample * 2
     assert not window.start_btn.isEnabled()
     assert not window.play_ts_btn.isEnabled()
     assert not window.decode_iq_btn.isEnabled()

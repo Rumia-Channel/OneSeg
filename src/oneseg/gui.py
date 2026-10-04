@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QSettings, QThread, Signal
+from PySide6.QtCore import Qt, QSettings, QThread, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -96,7 +96,11 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("OneSeg — DS-DT308SV SDR / 1seg research")
-        self.resize(1050, 720)
+        self.resize(1100, 900)
+        self._closing = False
+        self._receiver_stopping = False
+        self._receiver_error = ""
+        self._live_stopping = False
         self.worker: Receiver | None = None
         self.player: TransportPlayer | None = None
         self.decoder: OfflineDecodeWorker | None = None
@@ -107,7 +111,7 @@ class MainWindow(QMainWindow):
         self.live_stream: LiveTsBuffer | None = None
         self.live_frames = 0
         self.live_player_started = False
-        self.live_ts_skipped_waiting_psi = 0
+        self.live_ts_buffered_waiting_psi = 0
         self.scanning = False
         self.scan_rows = []
         self.settings = QSettings("Rumia-Channel", "OneSeg")
@@ -179,6 +183,7 @@ class MainWindow(QMainWindow):
         self.plot.setLabel("left", "Power", units="dBFS")
         self.plot.showGrid(x=True, y=True, alpha=0.2)
         self.plot.setYRange(-110, 5)
+        self.plot.setMinimumHeight(120)
         self.trace = self.plot.plot(pen=pg.mkPen("#57c8ed", width=1.5))
         layout.addWidget(self.plot, 1)
 
@@ -256,11 +261,13 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.stop_btn)
         actions.addWidget(self.record_btn)
         actions.addWidget(self.short_capture_btn)
-        actions.addWidget(self.live_btn)
-        actions.addWidget(self.survey_btn)
-        actions.addWidget(self.decode_iq_btn)
-        actions.addWidget(self.play_ts_btn)
         layout.addLayout(actions)
+        processing_actions = QHBoxLayout()
+        processing_actions.addWidget(self.live_btn)
+        processing_actions.addWidget(self.survey_btn)
+        processing_actions.addWidget(self.decode_iq_btn)
+        processing_actions.addWidget(self.play_ts_btn)
+        layout.addLayout(processing_actions)
 
         self.status = QLabel("Stopped")
         layout.addWidget(self.status)
@@ -342,17 +349,22 @@ class MainWindow(QMainWindow):
             self.worker.request("audio", enabled)
 
     def _start(self):
+        if self._closing:
+            return
         if (
             self.worker is not None or self.live is not None
             or self.survey is not None or self.decoder is not None
         ):
             return
+        self._receiver_stopping = False
+        self._receiver_error = ""
         self.worker = Receiver(
             frequency_hz=round(self.frequency.value() * 1e6),
             mode=self.mode.currentData(),
             ppm=self.ppm.value(),
             gain=self._gain(),
         )
+        self.worker.setParent(self)
         self.worker.spectrum.connect(self._update_spectrum)
         self.worker.device_ready.connect(self._ready)
         self.worker.message.connect(self.status.setText)
@@ -362,6 +374,7 @@ class MainWindow(QMainWindow):
         self.worker.scan_measurement.connect(self._scan_measurement)
         self.worker.scan_complete.connect(self._scan_complete)
         self.worker.finished.connect(self._finished)
+        self.worker.finished.connect(self.worker.deleteLater)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self._update_live_button()
@@ -369,6 +382,8 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def _ready(self):
+        if self.worker is None or self._receiver_stopping or self._closing:
+            return
         self.record_btn.setEnabled(True)
         self.short_capture_btn.setEnabled(True)
         self._update_scan_button()
@@ -382,7 +397,10 @@ class MainWindow(QMainWindow):
     def _update_scan_button(self):
         if self.scanning:
             return
-        ready = self.worker is not None and self.record_btn.isEnabled()
+        ready = (
+            self.worker is not None and self.record_btn.isEnabled()
+            and not self._receiver_stopping and not self._closing
+        )
         permitted = (
             ready
             and self.mode.currentData() == "oneseg"
@@ -402,16 +420,20 @@ class MainWindow(QMainWindow):
         self.ppm.setEnabled(not running)
         self.auto_gain.setEnabled(not running)
         self.gain.setEnabled(not running and not self.auto_gain.isChecked())
-        self.record_btn.setEnabled(not running and self.worker is not None)
-        self.short_capture_btn.setEnabled(not running and self.worker is not None)
+        ready = (
+            not running and self.worker is not None
+            and not self._receiver_stopping and not self._closing
+        )
+        self.record_btn.setEnabled(ready)
+        self.short_capture_btn.setEnabled(ready)
         self.wfm.setEnabled(not running and self.mode.currentData() == "sdr")
-        self.scan_tune_button.setEnabled(not running and bool(
+        self.scan_tune_button.setEnabled(ready and bool(
             self.scan_table.selectedItems()
         ))
         self.scan_export_button.setEnabled(not running and bool(self.scan_rows))
 
     def _scan_clicked(self):
-        if self.worker is None:
+        if self.worker is None or self._receiver_stopping or self._closing:
             return
         if self.scanning:
             self.worker.cancel_scan()
@@ -515,12 +537,17 @@ class MainWindow(QMainWindow):
 
     def _scan_selection_changed(self):
         self.scan_tune_button.setEnabled(
-            not self.scanning and bool(self.scan_table.selectedItems())
+            not self.scanning and self.worker is not None
+            and not self._receiver_stopping and not self._closing
+            and bool(self.scan_table.selectedItems())
         )
 
     def _tune_scan_selection(self):
         row = self.scan_table.currentRow()
-        if row < 0 or self.scanning or self.worker is None:
+        if (
+            row < 0 or self.scanning or self.worker is None
+            or self._receiver_stopping or self._closing
+        ):
             return
         cell = self.scan_table.item(row, 0)
         if cell is None:
@@ -590,6 +617,8 @@ class MainWindow(QMainWindow):
             )
 
     def _toggle_gain_survey(self):
+        if self._closing:
+            return
         if self.survey is not None:
             self.survey.stop()
             self.status.setText(
@@ -623,10 +652,12 @@ class MainWindow(QMainWindow):
         self.survey = GainSurveyWorker(
             self.channel.value(), self.ppm.value()
         )
+        self.survey.setParent(self)
         self.survey.progress.connect(self.status.setText)
         self.survey.succeeded.connect(self._survey_succeeded)
         self.survey.failed.connect(self._survey_failed)
         self.survey.finished.connect(self._survey_finished)
+        self.survey.finished.connect(self.survey.deleteLater)
         self._live_controls(True)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -679,10 +710,15 @@ class MainWindow(QMainWindow):
         self.decode_iq_btn.setEnabled(True)
         self.play_ts_btn.setEnabled(self.player is None)
         self._update_live_button()
+        self._finish_close()
 
     def _update_live_button(self):
+        if self._closing:
+            self.live_btn.setEnabled(False)
+            self.survey_btn.setEnabled(False)
+            return
         if self.live is not None:
-            self.live_btn.setEnabled(True)
+            self.live_btn.setEnabled(not self._live_stopping)
             self.live_btn.setText("Stop experimental LIVE 1seg")
             self.survey_btn.setEnabled(False)
             return
@@ -724,6 +760,8 @@ class MainWindow(QMainWindow):
         )
 
     def _toggle_live(self):
+        if self._closing:
+            return
         if self.live is not None:
             self._stop_live()
             return
@@ -745,15 +783,17 @@ class MainWindow(QMainWindow):
                 "Mode-3 / GI 1/8 Layer A QPSK 2/3 at present.",
             )
             return
+        self._live_stopping = False
         self.live_frames = 0
         self.live_player_started = False
-        self.live_ts_skipped_waiting_psi = 0
+        self.live_ts_buffered_waiting_psi = 0
         self.live_stream = LiveTsBuffer()
         self.live = ExperimentalLiveReceiver(
             frequency_hz=round(self.frequency.value() * 1e6),
             ppm=self.ppm.value(),
             gain=self.gain.value(),
         )
+        self.live.setParent(self)
         self.live.transport.connect(self._live_transport)
         self.live.progress.connect(self._live_progress)
         self.live.status.connect(self.status.setText)
@@ -761,11 +801,14 @@ class MainWindow(QMainWindow):
         self.live.bundle_ready.connect(self._live_bundle_ready)
         self.live.failed.connect(self._live_failed)
         self.live.finished.connect(self._live_finished)
+        self.live.finished.connect(self.live.deleteLater)
         self.player = TransportPlayer(self.live_stream)
+        self.player.setParent(self)
         self.player.image_ready.connect(self._show_frame)
         self.player.status.connect(self.status.setText)
         self.player.failed.connect(self._live_player_failed)
         self.player.finished.connect(self._player_finished)
+        self.player.finished.connect(self.player.deleteLater)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.play_ts_btn.setEnabled(False)
@@ -781,30 +824,35 @@ class MainWindow(QMainWindow):
             "Watch accepted/rejected counts and whether PAT is present."
         )
         # Do not initialize PyAV with an arbitrary PAT-less TS fragment.
-        # Start video only after real PAT and PMT were recovered together.
+        # Start only after real PAT and matching PMT have been recovered.
+        # Their original bytes may span independently decoded RF windows.
         self.live.start()
 
     def _live_transport(self, data):
-        if self.live_stream is None:
-            return
-        if not self.live_player_started:
-            # These are genuine packets but cannot start a known program;
-            # do not keep an unbounded PAT-less buffer or invent PSI.
-            self.live_ts_skipped_waiting_psi += len(data) // 188
+        if self.live_stream is None or self._live_stopping or self._closing:
             return
         try:
+            # Preserve the real PAT from an earlier window until a matching
+            # PMT arrives. The buffer remains bounded even with no PSI/reader.
             self.live_stream.push(data)
+            if not self.live_player_started:
+                self.live_ts_buffered_waiting_psi += len(data) // 188
         except (BufferError, ValueError) as exc:
             if self.live is not None:
                 self.live.record_event(
                     "player_buffer_error", error=str(exc),
                 )
-            self.status.setText(f"Live TS consumer cannot keep up: {exc}")
+            waiting = not self.live_player_started
             self._stop_live()
+            self.status.setText(
+                f"Live TS buffer stopped while waiting for PAT/PMT: {exc}"
+                if waiting else f"Live TS consumer cannot keep up: {exc}"
+            )
 
     def _live_progress(self, report):
         if (
             not self.live_player_started
+            and not self._live_stopping and not self._closing
             and report["has_pat"]
             and report["has_pmt"]
             and self.player is not None
@@ -812,7 +860,7 @@ class MainWindow(QMainWindow):
             self.live_player_started = True
             self.player.start()
             self.status.setText(
-                "Real PAT/PMT recovered; starting PyAV from this TS window."
+                "Real PAT/PMT recovered; starting PyAV with buffered TS packets."
             )
         percent = report.get("fullscale_percent")
         clipping_text = (
@@ -862,8 +910,8 @@ class MainWindow(QMainWindow):
             f"{report['windows_failed']} failed windows; "
             f"PAT {'found' if report['has_pat'] else 'absent'}, "
             f"PMT {'found' if report['has_pmt'] else 'absent'}, "
-            f"skipped {self.live_ts_skipped_waiting_psi} packets while "
-            f"waiting for verified PSI; ADC {clipping_text}"
+            f"buffered {self.live_ts_buffered_waiting_psi} initial packets "
+            f"while waiting for verified PSI; ADC {clipping_text}"
             f"{' OVERLOADED (reduce gain)' if report['overloaded'] else ''}; "
             f"{self.live_frames} rendered video frames. "
             f"USB {report.get('usb_window_seconds')}s, "
@@ -910,7 +958,7 @@ class MainWindow(QMainWindow):
             )
         # Partial TS can lack PAT/PMT or contain broken PES. Stop the
         # experiment, but do not treat this as a native USB failure.
-        if self.live is None:
+        if self.live is None or self._live_stopping or self._closing:
             return
         self._stop_live()
         self.status.setText(
@@ -926,11 +974,13 @@ class MainWindow(QMainWindow):
         # Release USB and unblock PyAV before any modal error dialog.
         self._stop_live()
         self.status.setText(message)
-        QMessageBox.warning(self, "Experimental live receiver error", message)
+        if not self._closing:
+            QMessageBox.warning(self, "Experimental live receiver error", message)
 
     def _stop_live(self):
         if self.live is None:
             return
+        self._live_stopping = True
         self.live_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
         self.status.setText("Stopping experimental live receiver and TS player…")
@@ -941,9 +991,14 @@ class MainWindow(QMainWindow):
             if self.live_player_started:
                 self.player.stop()
             else:
+                self.player.deleteLater()
                 self.player = None
 
     def _live_finished(self):
+        # Also release an unstarted player when USB fails before any PAT/PMT.
+        if self.player is not None and not self.live_player_started:
+            self.player.deleteLater()
+            self.player = None
         self.live = None
         self.live_player_started = False
         self._live_controls(False)
@@ -963,8 +1018,11 @@ class MainWindow(QMainWindow):
             self.live_metrics.text()
             + f" Session ended: {self.live_frames} video frames."
         )
+        self._finish_close()
 
     def _decode_saved_iq(self):
+        if self._closing or self.live is not None:
+            return
         if self.survey is not None:
             self.status.setText("Wait for automatic RF survey before decoding.")
             return
@@ -1007,12 +1065,14 @@ class MainWindow(QMainWindow):
             )
             return
         self.decoder = OfflineDecodeWorker(source, output)
+        self.decoder.setParent(self)
         self.start_btn.setEnabled(False)
         self._update_live_button()
         self.decoder.progress.connect(self.status.setText)
         self.decoder.succeeded.connect(self._decoded_iq)
         self.decoder.failed.connect(self._offline_decode_failed)
         self.decoder.finished.connect(self._offline_decode_finished)
+        self.decoder.finished.connect(self.decoder.deleteLater)
         self.decode_iq_btn.setEnabled(False)
         self.status.setText(
             "Starting offline decode; tuner not accessed and TS may be partial..."
@@ -1035,6 +1095,8 @@ class MainWindow(QMainWindow):
 
     def _offline_decode_failed(self, error):
         self.status.setText(f"Offline decode failed: {error}")
+        if self._closing:
+            return
         QMessageBox.warning(
             self, "Offline decode failed",
             error + "\nNo MPEG-TS was fabricated from unverified data.",
@@ -1045,8 +1107,11 @@ class MainWindow(QMainWindow):
         self.decode_iq_btn.setEnabled(True)
         self.start_btn.setEnabled(self.worker is None and self.live is None)
         self._update_live_button()
+        self._finish_close()
 
     def _play_ts(self):
+        if self._closing:
+            return
         if self.survey is not None or self.live is not None:
             return
         if self.player is not None:
@@ -1060,11 +1125,13 @@ class MainWindow(QMainWindow):
         if not filename:
             return
         self.player = TransportPlayer(Path(filename))
+        self.player.setParent(self)
         self._update_live_button()
         self.player.image_ready.connect(self._show_frame)
         self.player.status.connect(self.status.setText)
-        self.player.failed.connect(self._error)
+        self.player.failed.connect(self._player_error)
         self.player.finished.connect(self._player_finished)
+        self.player.finished.connect(self.player.deleteLater)
         self.play_ts_btn.setText("Stop TS player")
         self.player.start()
 
@@ -1089,9 +1156,10 @@ class MainWindow(QMainWindow):
         self.play_ts_btn.setEnabled(self.live is None)
         self.play_ts_btn.setText("Play decoded TS…")
         self._update_live_button()
+        self._finish_close()
 
     def _capture_short(self):
-        if self.worker is None:
+        if self.worker is None or self._receiver_stopping or self._closing:
             return
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         name = f"ch{self.channel.value()}" if self.mode.currentData() == "oneseg" else "sdr"
@@ -1111,7 +1179,7 @@ class MainWindow(QMainWindow):
         self.worker.request("capture_short", str(path), 3.0)
 
     def _record(self):
-        if self.worker is None:
+        if self.worker is None or self._receiver_stopping or self._closing:
             return
         if self.record_btn.property("active"):
             self.worker.request("record_stop")
@@ -1136,7 +1204,10 @@ class MainWindow(QMainWindow):
     def _recording(self, recording: bool):
         self.record_btn.setProperty("active", recording)
         self.record_btn.setText("Stop recording" if recording else "Record I/Q…")
-        self.short_capture_btn.setEnabled(not recording and self.worker is not None)
+        self.short_capture_btn.setEnabled(
+            not recording and self.worker is not None
+            and not self._receiver_stopping and not self._closing
+        )
         self._update_scan_button()
 
     def _stop(self):
@@ -1149,6 +1220,11 @@ class MainWindow(QMainWindow):
             self._stop_live()
             return
         if self.worker:
+            self._receiver_stopping = True
+            self.record_btn.setEnabled(False)
+            self.short_capture_btn.setEnabled(False)
+            self.scan_button.setEnabled(False)
+            self.scan_tune_button.setEnabled(False)
             self.stop_btn.setEnabled(False)
             self.worker.stop()
             self.status.setText("Stopping…")
@@ -1162,48 +1238,57 @@ class MainWindow(QMainWindow):
         self.record_btn.setEnabled(False)
         self.short_capture_btn.setEnabled(False)
         self._recording(False)
-        self.status.setText("Stopped")
+        self.status.setText(self._receiver_error or "Stopped")
         self._update_scan_button()
         self._update_live_button()
+        self._finish_close()
 
     def _error(self, details):
+        self._receiver_error = details
         self.status.setText(details)
+        if self._closing:
+            return
         QMessageBox.warning(
             self,
             "Receiver error",
             explain_receiver_error(details),
         )
 
+    def _player_error(self, details):
+        self.status.setText(f"TS playback failed: {details}")
+        if not self._closing:
+            QMessageBox.warning(self, "TS playback error", details)
+
+    def _finish_close(self):
+        if self._closing:
+            # Queue a new close after Qt has delivered this finished signal.
+            # Never block the event loop waiting for USB or long DSP work.
+            QTimer.singleShot(0, self.close)
+
     def closeEvent(self, event):
-        if self.survey is not None and self.survey.isRunning():
+        self._closing = True
+        self.centralWidget().setEnabled(False)
+        if self.survey is not None:
             self.survey.stop()
-            if not self.survey.wait(3000):
-                self.status.setText(
-                    "Waiting for automatic gain survey to release USB..."
-                )
-                event.ignore()
-                return
-        if self.live is not None and self.live.isRunning():
+        if self.live is not None:
             self._stop_live()
-            if not self.live.wait(3000):
-                self.status.setText("Waiting for experimental live decoder to stop…")
-                event.ignore()
-                return
-        if self.decoder is not None and self.decoder.isRunning():
-            self.status.setText("Wait for offline decoder to complete before closing…")
+        if self.player is not None:
+            self.player.stop()
+        if self.worker is not None:
+            self._receiver_stopping = True
+            self.worker.stop()
+        active = [
+            worker for worker in (
+                self.survey, self.live, self.decoder, self.player, self.worker
+            )
+            if worker is not None and worker.isRunning()
+        ]
+        if active:
+            self.status.setText(
+                "Closing: waiting for USB, playback and decoder work to finish…"
+            )
             event.ignore()
             return
-        if self.player and self.player.isRunning():
-            self.player.stop()
-            if not self.player.wait(3000):
-                event.ignore()
-                return
-        if self.worker and self.worker.isRunning():
-            self.worker.stop()
-            if not self.worker.wait(3000):
-                self.status.setText("Waiting for RTL-SDR to release…")
-                event.ignore()
-                return
         super().closeEvent(event)
 
 

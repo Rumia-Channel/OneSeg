@@ -13,14 +13,25 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.12"
+      - name: Install offscreen Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libegl1 libopengl0
       - name: Resolve project and test dependencies
-        run: uv sync
-      - name: Unit tests (no USB hardware required)
-        run: uv run pytest -q
+        run: uv sync --locked
+      - name: Correctness lint
+        run: uv run --locked ruff check .
+      - name: Unit and offscreen GUI tests (no USB hardware required)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run --locked pytest -q
+      - name: CLI help smoke test
+        run: uv run --locked oneseg --help
       - name: GUI import smoke test (Windows)
         if: runner.os == 'Windows'
         run: uv run python -c "import oneseg.gui; print('GUI imports OK')"
