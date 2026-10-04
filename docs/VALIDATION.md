@@ -14,7 +14,9 @@ uv run --locked oneseg --help
 On PowerShell set `$env:QT_QPA_PLATFORM = 'offscreen'` before `uv run --locked pytest -q`.
 The committed lockfile fixes the dependency set. Correctness lint deliberately
 checks runtime/syntax errors, rather than imposing unrelated formatting changes.
-CI runs the same tests on Windows and Linux. Hardware acceptance below is separate.
+CI runs the same tests on Windows and Linux. On minimal Ubuntu images, Qt
+Widgets still needs `libegl1` and `libopengl0` even with the offscreen backend;
+CI installs these system libraries explicitly. Hardware acceptance below is separate.
 
 ## Regression coverage
 
